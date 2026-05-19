@@ -2,7 +2,7 @@
 <html lang="ru">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Proxy Admin Panel</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -11,7 +11,7 @@
       rel="stylesheet"
     />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=16" />
+    <link rel="stylesheet" href="/static/styles.css?v=18" />
   </head>
   <body>
     <div id="loginOverlay" class="overlay">
@@ -240,7 +240,7 @@
           </div>
         </div>
         <div class="table-wrap">
-          <table>
+          <table class="users-table">
             <thead>
               <tr>
                 <th class="sortable" data-sort="id" scope="col" title="Сортировать по ID">ID <span class="sort-indicator" aria-hidden="true"></span></th>
@@ -344,6 +344,6 @@
         </div>
       </div>
     </div>
-    <script src="/static/app.js?v=24"></script>
+    <script src="/static/app.js?v=25"></script>
   </body>
 </html>

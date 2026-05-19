@@ -395,19 +395,19 @@ function userRow(user) {
   const mtprotoLink = `tg://proxy?server=${encodeURIComponent(panelMeta.proxy_public_mtproto_host || panelMeta.proxy_public_host)}&port=${encodeURIComponent(String(panelMeta.proxy_public_mtproto_port || 14443))}&secret=${encodeURIComponent(user.mtproto_secret || "")}`;
   const accessOk = user.access_allowed !== false;
   tr.innerHTML = `
-    <td class="cell-num">${user.id}</td>
-    <td><strong>${user.username}</strong></td>
-    <td>${user.allow_http ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'}</td>
-    <td>${user.allow_socks5 ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'}</td>
-    <td>${user.allow_mtproto ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'}</td>
-    <td class="cell-num">${formatBytes(user.traffic_in_bytes)}</td>
-    <td class="cell-num">${formatBytes(user.traffic_out_bytes)}</td>
-    <td class="cell-num cell-total-traffic">${formatTotalTrafficCell(user)}</td>
-    <td class="cell-num">${user.requests_count}</td>
-    <td>${formatExpiresCell(user)}</td>
-    <td>${formatLimitCell(user)}</td>
-    <td>${accessStatusPill(user)}</td>
-    <td>
+    <td class="cell-num" data-label="ID">${user.id}</td>
+    <td data-label="Username"><strong>${user.username}</strong></td>
+    <td data-label="HTTP">${user.allow_http ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'}</td>
+    <td data-label="SOCKS5">${user.allow_socks5 ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'}</td>
+    <td data-label="MTProto">${user.allow_mtproto ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'}</td>
+    <td class="cell-num" data-label="Входящий">${formatBytes(user.traffic_in_bytes)}</td>
+    <td class="cell-num" data-label="Исходящий">${formatBytes(user.traffic_out_bytes)}</td>
+    <td class="cell-num cell-total-traffic" data-label="Всего">${formatTotalTrafficCell(user)}</td>
+    <td class="cell-num" data-label="Запросов">${user.requests_count}</td>
+    <td data-label="До">${formatExpiresCell(user)}</td>
+    <td data-label="Лимит">${formatLimitCell(user)}</td>
+    <td data-label="Статус">${accessStatusPill(user)}</td>
+    <td data-label="Действия">
       <div class="row-actions">
         <button class="btn btn-compact" data-action="toggle-http">${user.allow_http ? "HTTP off" : "HTTP on"}</button>
         <button class="btn btn-compact" data-action="toggle-socks">${user.allow_socks5 ? "SOCKS off" : "SOCKS on"}</button>
