@@ -845,9 +845,57 @@ th {
   border-bottom: 1px solid var(--line);
 }
 
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+th.sortable:hover {
+  color: #e2eaff;
+}
+
+th.sortable.sort-active {
+  color: #dbe4ff;
+}
+
+.sort-indicator {
+  display: inline-block;
+  margin-left: 3px;
+  opacity: 0.35;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+th.sortable.sort-active .sort-indicator {
+  opacity: 1;
+  color: #7ba3ff;
+}
+
 .cell-num {
   font-variant-numeric: tabular-nums;
   color: #dbe4ff;
+}
+
+.cell-total-traffic {
+  min-width: 7.5rem;
+}
+
+.cell-total-traffic .cell-total-main {
+  display: block;
+  font-weight: 600;
+}
+
+.cell-total-traffic .cell-total-sub {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--muted2);
+  white-space: nowrap;
 }
 
 .cell-yes {
@@ -871,6 +919,98 @@ th {
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+
+/* ---------- Traffic summary (main tab) ---------- */
+.traffic-summary-body {
+  padding-top: 14px;
+}
+
+.traffic-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 720px) {
+  .traffic-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.traffic-summary-block {
+  padding: 14px 16px;
+  border: 1px solid rgba(36, 49, 82, 0.75);
+  border-radius: var(--radius-sm);
+  background: rgba(8, 12, 24, 0.55);
+}
+
+.traffic-summary-heading {
+  margin: 0 0 12px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #dbe4ff;
+  letter-spacing: -0.01em;
+}
+
+.traffic-summary-period {
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.traffic-summary-first-connect {
+  margin-top: 4px;
+  color: #b8c9f5;
+}
+
+.traffic-summary-total-dd {
+  text-align: right;
+}
+
+.traffic-summary-total-main {
+  display: block;
+}
+
+.traffic-summary-total-sub {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--muted2);
+}
+
+.traffic-summary-metrics {
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.traffic-summary-metric {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.traffic-summary-metric dt {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.traffic-summary-metric dd {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #e8eeff;
+}
+
+.traffic-summary-metric-total dd {
+  color: #9ec1ff;
+  font-size: 1rem;
 }
 
 /* ---------- Chart ---------- */

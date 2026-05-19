@@ -10,7 +10,16 @@ const usersTabBtn = document.getElementById("usersTabBtn");
 const vlessTabBtn = document.getElementById("vlessTabBtn");
 const analyticsTabBtn = document.getElementById("analyticsTabBtn");
 const usersSection = document.getElementById("usersSection");
+const trafficSummarySection = document.getElementById("trafficSummarySection");
 const usersTableSection = document.getElementById("usersTableSection");
+const summaryAllTimeIn = document.getElementById("summaryAllTimeIn");
+const summaryAllTimeOut = document.getElementById("summaryAllTimeOut");
+const summaryAllTimeTotal = document.getElementById("summaryAllTimeTotal");
+const summaryMonthLabel = document.getElementById("summaryMonthLabel");
+const summaryMonthIn = document.getElementById("summaryMonthIn");
+const summaryMonthOut = document.getElementById("summaryMonthOut");
+const summaryMonthTotal = document.getElementById("summaryMonthTotal");
+const summaryFirstConnection = document.getElementById("summaryFirstConnection");
 const vlessSection = document.getElementById("vlessSection");
 const analyticsSection = document.getElementById("analyticsSection");
 const archiveMenuBtn = document.getElementById("archiveMenuBtn");
@@ -70,10 +79,46 @@ let usersCache = [];
 let usersTableTotal = 0;
 const USERS_PAGE_SIZE = 20;
 let usersListPage = 1;
+let usersSortBy = "id";
+let usersSortDir = "asc";
 let usersSearchDebounce = null;
 const USERS_REFRESH_INTERVAL_MS = 5000;
 let usersRefreshInFlight = false;
 let trafficChart = null;
+
+function updateUsersSortHeaders() {
+  const headers = document.querySelectorAll("#usersTableSection th.sortable[data-sort]");
+  headers.forEach((th) => {
+    const field = th.dataset.sort;
+    const indicator = th.querySelector(".sort-indicator");
+    const active = field === usersSortBy;
+    th.classList.toggle("sort-active", active);
+    th.setAttribute("aria-sort", active ? (usersSortDir === "asc" ? "ascending" : "descending") : "none");
+    if (indicator) {
+      indicator.textContent = active ? (usersSortDir === "asc" ? "↑" : "↓") : "⇅";
+    }
+  });
+}
+
+function initUsersTableSort() {
+  const headers = document.querySelectorAll("#usersTableSection th.sortable[data-sort]");
+  headers.forEach((th) => {
+    th.addEventListener("click", () => {
+      const field = th.dataset.sort;
+      if (!field) return;
+      if (usersSortBy === field) {
+        usersSortDir = usersSortDir === "asc" ? "desc" : "asc";
+      } else {
+        usersSortBy = field;
+        usersSortDir = "asc";
+      }
+      usersListPage = 1;
+      updateUsersSortHeaders();
+      loadUsers();
+    });
+  });
+  updateUsersSortHeaders();
+}
 
 function updateUsersPaginationUi(total, totalPages) {
   if (!usersPagination) return;
@@ -121,6 +166,7 @@ function closeArchiveMenu() {
 
 function showUsersTab() {
   usersSection.classList.remove("hidden");
+  if (trafficSummarySection) trafficSummarySection.classList.remove("hidden");
   usersTableSection.classList.remove("hidden");
   vlessSection.classList.add("hidden");
   analyticsSection.classList.add("hidden");
@@ -134,6 +180,7 @@ function showUsersTab() {
 
 function showVlessTab() {
   usersSection.classList.add("hidden");
+  if (trafficSummarySection) trafficSummarySection.classList.add("hidden");
   usersTableSection.classList.add("hidden");
   vlessSection.classList.remove("hidden");
   analyticsSection.classList.add("hidden");
@@ -147,6 +194,7 @@ function showVlessTab() {
 
 function showAnalyticsTab() {
   usersSection.classList.add("hidden");
+  if (trafficSummarySection) trafficSummarySection.classList.add("hidden");
   usersTableSection.classList.add("hidden");
   vlessSection.classList.add("hidden");
   analyticsSection.classList.remove("hidden");
@@ -205,6 +253,68 @@ function formatExpiresCell(user) {
 function formatLimitCell(user) {
   if (user.traffic_limit_bytes == null || user.traffic_limit_bytes <= 0) return "—";
   return `${formatBytes(user.traffic_limit_bytes)} (${formatBytes(user.traffic_bytes)} исп.)`;
+}
+
+function formatDaysSince(startMs) {
+  const days = Math.max(1, Math.ceil((Date.now() - startMs) / 86400000));
+  const mod10 = days % 10;
+  const mod100 = days % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${days} день`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return `${days} дня`;
+  return `${days} дн.`;
+}
+
+function formatFirstConnectionSince(isoDate) {
+  if (!isoDate) return null;
+  try {
+    const start = new Date(isoDate);
+    if (Number.isNaN(start.getTime())) return null;
+    const dateStr = start.toLocaleDateString("ru-RU", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+    return { dateStr, daysStr: formatDaysSince(start.getTime()) };
+  } catch (_e) {
+    return null;
+  }
+}
+
+function renderSummaryTotalDd(el, bytes, sinceIso) {
+  if (!el) return;
+  const total = formatBytes(bytes || 0);
+  const since = formatFirstConnectionSince(sinceIso);
+  if (!since || !bytes) {
+    el.textContent = total;
+    return;
+  }
+  el.innerHTML = `<span class="traffic-summary-total-main">${total}</span><span class="traffic-summary-total-sub">с ${since.dateStr} · ${since.daysStr}</span>`;
+}
+
+function formatTotalTrafficCell(user) {
+  const total = formatBytes(user.traffic_bytes);
+  if (!user.traffic_bytes && !user.requests_count) {
+    return `<span class="cell-total-main">${total}</span>`;
+  }
+  const sinceRaw = user.first_connection_at || user.created_at;
+  if (!sinceRaw) {
+    return `<span class="cell-total-main">${total}</span>`;
+  }
+  try {
+    const start = new Date(sinceRaw);
+    if (Number.isNaN(start.getTime())) {
+      return `<span class="cell-total-main">${total}</span>`;
+    }
+    const dateStr = start.toLocaleDateString("ru-RU", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+    const daysStr = formatDaysSince(start.getTime());
+    return `<span class="cell-total-main">${total}</span><span class="cell-total-sub" title="С первого подключения">с ${dateStr} · ${daysStr}</span>`;
+  } catch (_e) {
+    return `<span class="cell-total-main">${total}</span>`;
+  }
 }
 
 function openLimitsModal(user) {
@@ -292,7 +402,7 @@ function userRow(user) {
     <td>${user.allow_mtproto ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'}</td>
     <td class="cell-num">${formatBytes(user.traffic_in_bytes)}</td>
     <td class="cell-num">${formatBytes(user.traffic_out_bytes)}</td>
-    <td class="cell-num">${formatBytes(user.traffic_bytes)}</td>
+    <td class="cell-num cell-total-traffic">${formatTotalTrafficCell(user)}</td>
     <td class="cell-num">${user.requests_count}</td>
     <td>${formatExpiresCell(user)}</td>
     <td>${formatLimitCell(user)}</td>
@@ -400,6 +510,35 @@ async function updateUser(id, payload) {
   }
 }
 
+function renderTrafficSummary(summary) {
+  if (!summary) return;
+  const all = summary.all_time || {};
+  const month = summary.month || {};
+  const sinceIso = summary.first_connection_at;
+  if (summaryAllTimeIn) summaryAllTimeIn.textContent = formatBytes(all.traffic_in_bytes || 0);
+  if (summaryAllTimeOut) summaryAllTimeOut.textContent = formatBytes(all.traffic_out_bytes || 0);
+  renderSummaryTotalDd(summaryAllTimeTotal, all.traffic_bytes, sinceIso);
+  const since = formatFirstConnectionSince(sinceIso);
+  if (summaryFirstConnection) {
+    summaryFirstConnection.textContent = since
+      ? `С первого подключения к серверу: ${since.dateStr} · ${since.daysStr}`
+      : "";
+  }
+  if (summaryMonthLabel) summaryMonthLabel.textContent = summary.month_label ? `(${summary.month_label})` : "";
+  if (summaryMonthIn) summaryMonthIn.textContent = formatBytes(month.traffic_in_bytes || 0);
+  if (summaryMonthOut) summaryMonthOut.textContent = formatBytes(month.traffic_out_bytes || 0);
+  if (summaryMonthTotal) summaryMonthTotal.textContent = formatBytes(month.traffic_bytes || 0);
+}
+
+async function loadTrafficSummary() {
+  try {
+    const summary = await api("/api/traffic/summary");
+    renderTrafficSummary(summary);
+  } catch (e) {
+    setStatus(`Ошибка сводки трафика: ${e.message}`, true);
+  }
+}
+
 async function loadUsers() {
   if (usersRefreshInFlight) return;
   usersRefreshInFlight = true;
@@ -409,11 +548,14 @@ async function loadUsers() {
       const qs = new URLSearchParams({
         page: String(usersListPage),
         per_page: String(USERS_PAGE_SIZE),
+        sort_by: usersSortBy,
+        sort_dir: usersSortDir,
       });
       if (q) qs.set("q", q);
       const [pageData, chartUsers] = await Promise.all([
         api(`/api/users?${qs.toString()}`),
         api("/api/users/chart-options"),
+        loadTrafficSummary(),
       ]);
       const total = Number(pageData.total) || 0;
       const perPage = Number(pageData.per_page) || USERS_PAGE_SIZE;
@@ -921,6 +1063,8 @@ if (usersPageNext) {
     }
   });
 }
+
+initUsersTableSort();
 
 if (vlessForm) {
   vlessForm.addEventListener("submit", async (e) => {

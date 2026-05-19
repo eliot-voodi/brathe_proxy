@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from pydantic import BaseModel, Field, ValidationError, field_validator
-from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, delete, func, select, text
+from sqlalchemy import Boolean, DateTime, Integer, String, and_, case, create_engine, delete, func, or_, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -113,6 +113,7 @@ class ProxyUser(Base):
     traffic_out_bytes: Mapped[int] = mapped_column(Integer, default=0)
     traffic_bytes: Mapped[int] = mapped_column(Integer, default=0)
     requests_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_connection_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     traffic_limit_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -260,6 +261,7 @@ class UserOut(BaseModel):
     traffic_out_bytes: int
     traffic_bytes: int
     requests_count: int
+    first_connection_at: datetime | None = None
     created_at: datetime
     expires_at: datetime | None
     traffic_limit_bytes: int | None
@@ -308,6 +310,150 @@ class TrafficSeriesPoint(BaseModel):
     traffic_bytes: int
 
 
+class TrafficPeriodSummary(BaseModel):
+    traffic_in_bytes: int
+    traffic_out_bytes: int
+    traffic_bytes: int
+
+
+class TrafficSummaryOut(BaseModel):
+    all_time: TrafficPeriodSummary
+    month: TrafficPeriodSummary
+    month_label: str
+    month_start: datetime
+    month_end: datetime
+    first_connection_at: datetime | None = None
+
+
+_MONTHS_GENITIVE_RU = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
+
+def calendar_month_bounds_utc(now: datetime | None = None) -> tuple[datetime, datetime, str]:
+    """Границы текущего календарного месяца (UTC): [start, end), подпись «1–31 мая 2026»."""
+    now = now or datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if month_start.month == 12:
+        next_month = month_start.replace(year=month_start.year + 1, month=1)
+    else:
+        next_month = month_start.replace(month=month_start.month + 1)
+    last_day = (next_month - timedelta(days=1)).day
+    label = f"1–{last_day} {_MONTHS_GENITIVE_RU[month_start.month - 1]} {month_start.year}"
+    return month_start, next_month, label
+
+
+def aggregate_users_traffic_totals(db: Session) -> tuple[int, int, int]:
+    row = db.execute(
+        select(
+            func.coalesce(func.sum(ProxyUser.traffic_in_bytes), 0),
+            func.coalesce(func.sum(ProxyUser.traffic_out_bytes), 0),
+            func.coalesce(func.sum(ProxyUser.traffic_bytes), 0),
+        )
+    ).one()
+    return int(row[0]), int(row[1]), int(row[2])
+
+
+def latest_aggregate_traffic_sample_before(db: Session, before: datetime) -> TrafficSample | None:
+    return db.scalars(
+        select(TrafficSample)
+        .where(TrafficSample.user_id.is_(None), TrafficSample.captured_at < before)
+        .order_by(TrafficSample.captured_at.desc())
+        .limit(1)
+    ).first()
+
+
+def traffic_delta_since_baseline(
+    current: tuple[int, int, int],
+    baseline: tuple[int, int, int] | None,
+) -> TrafficPeriodSummary:
+    if baseline is None:
+        return TrafficPeriodSummary(
+            traffic_in_bytes=current[0],
+            traffic_out_bytes=current[1],
+            traffic_bytes=current[2],
+        )
+    return TrafficPeriodSummary(
+        traffic_in_bytes=max(0, current[0] - baseline[0]),
+        traffic_out_bytes=max(0, current[1] - baseline[1]),
+        traffic_bytes=max(0, current[2] - baseline[2]),
+    )
+
+
+def earliest_server_first_connection(db: Session) -> datetime | None:
+    """Самое раннее подключение любого пользователя к прокси (серверу)."""
+    first_user = db.scalar(
+        select(func.min(ProxyUser.first_connection_at)).where(ProxyUser.first_connection_at.isnot(None))
+    )
+    if first_user is not None:
+        return first_user
+    first_event = db.scalar(select(func.min(TrafficEvent.logged_at)).where(TrafficEvent.logged_at.isnot(None)))
+    if first_event is not None:
+        return first_event
+    return db.scalar(
+        select(func.min(ProxyUser.created_at)).where(
+            or_(ProxyUser.traffic_bytes > 0, ProxyUser.requests_count > 0)
+        )
+    )
+
+
+def build_traffic_summary(db: Session, now: datetime | None = None) -> TrafficSummaryOut:
+    now = now or datetime.now(timezone.utc)
+    month_start, month_end_exclusive, month_label = calendar_month_bounds_utc(now)
+    current = aggregate_users_traffic_totals(db)
+    first_connection_at = earliest_server_first_connection(db)
+    all_time = TrafficPeriodSummary(
+        traffic_in_bytes=current[0],
+        traffic_out_bytes=current[1],
+        traffic_bytes=current[2],
+    )
+    baseline_row = latest_aggregate_traffic_sample_before(db, month_start)
+    baseline = None
+    if baseline_row is not None:
+        baseline = (baseline_row.traffic_in_bytes, baseline_row.traffic_out_bytes, baseline_row.traffic_bytes)
+    else:
+        first_in_month = db.scalars(
+            select(TrafficSample)
+            .where(
+                TrafficSample.user_id.is_(None),
+                TrafficSample.captured_at >= month_start,
+                TrafficSample.captured_at < month_end_exclusive,
+            )
+            .order_by(TrafficSample.captured_at.asc())
+            .limit(1)
+        ).first()
+        if first_in_month is not None:
+            baseline = (
+                first_in_month.traffic_in_bytes,
+                first_in_month.traffic_out_bytes,
+                first_in_month.traffic_bytes,
+            )
+    if baseline is not None:
+        month = traffic_delta_since_baseline(current, baseline)
+    else:
+        month = all_time
+    month_end = month_end_exclusive - timedelta(microseconds=1)
+    return TrafficSummaryOut(
+        all_time=all_time,
+        month=month,
+        month_label=month_label,
+        month_start=month_start,
+        month_end=month_end,
+        first_connection_at=first_connection_at,
+    )
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
@@ -334,6 +480,32 @@ def init_db() -> None:
             conn.execute(text("ALTER TABLE proxy_users ADD COLUMN expires_at TIMESTAMP"))
         if "traffic_limit_bytes" not in columns:
             conn.execute(text("ALTER TABLE proxy_users ADD COLUMN traffic_limit_bytes INTEGER"))
+        if "first_connection_at" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN first_connection_at TIMESTAMP"))
+            conn.execute(
+                text(
+                    """
+                    UPDATE proxy_users
+                    SET first_connection_at = (
+                        SELECT MIN(te.logged_at)
+                        FROM traffic_events te
+                        WHERE te.username = proxy_users.username AND te.logged_at IS NOT NULL
+                    )
+                    WHERE (traffic_bytes > 0 OR requests_count > 0)
+                      AND first_connection_at IS NULL
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    UPDATE proxy_users
+                    SET first_connection_at = created_at
+                    WHERE (traffic_bytes > 0 OR requests_count > 0)
+                      AND first_connection_at IS NULL
+                    """
+                )
+            )
         panel_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(panel_settings)")).fetchall()]
         if panel_columns and "vless_singbox_restart_pending" not in panel_columns:
             conn.execute(
@@ -677,6 +849,12 @@ def restart_vless_runtime_services() -> tuple[bool, str]:
     return True, "ok"
 
 
+def maybe_mark_first_connection(user: ProxyUser, when: datetime | None = None) -> None:
+    if user.first_connection_at is not None:
+        return
+    user.first_connection_at = when or datetime.now(timezone.utc)
+
+
 def user_has_proxy_access(user: ProxyUser, now: datetime | None = None) -> bool:
     now = now or datetime.now(timezone.utc)
     if user.expires_at is not None:
@@ -693,6 +871,60 @@ def user_has_proxy_access(user: ProxyUser, now: datetime | None = None) -> bool:
     return True
 
 
+USER_LIST_SORT_FIELDS = frozenset(
+    {
+        "id",
+        "username",
+        "allow_http",
+        "allow_socks5",
+        "allow_mtproto",
+        "traffic_in_bytes",
+        "traffic_out_bytes",
+        "traffic_bytes",
+        "requests_count",
+        "expires_at",
+        "traffic_limit_bytes",
+        "access_allowed",
+    }
+)
+
+
+def user_access_allowed_sort_expr(now: datetime | None = None):
+    """SQL: 1 — доступ разрешён, 0 — заблокирован (для ORDER BY)."""
+    now = now or datetime.now(timezone.utc)
+    expiry_ok = or_(ProxyUser.expires_at.is_(None), ProxyUser.expires_at > now)
+    limit_ok = or_(
+        ProxyUser.traffic_limit_bytes.is_(None),
+        and_(ProxyUser.traffic_limit_bytes > 0, ProxyUser.traffic_bytes < ProxyUser.traffic_limit_bytes),
+    )
+    return case((and_(expiry_ok, limit_ok), 1), else_=0)
+
+
+def users_list_order_clauses(sort_by: str, sort_dir: str, *, now: datetime | None = None):
+    field = sort_by if sort_by in USER_LIST_SORT_FIELDS else "id"
+    descending = sort_dir.lower() == "desc"
+    columns = {
+        "id": ProxyUser.id,
+        "username": ProxyUser.username,
+        "allow_http": ProxyUser.allow_http,
+        "allow_socks5": ProxyUser.allow_socks5,
+        "allow_mtproto": ProxyUser.allow_mtproto,
+        "traffic_in_bytes": ProxyUser.traffic_in_bytes,
+        "traffic_out_bytes": ProxyUser.traffic_out_bytes,
+        "traffic_bytes": ProxyUser.traffic_bytes,
+        "requests_count": ProxyUser.requests_count,
+        "expires_at": ProxyUser.expires_at,
+        "traffic_limit_bytes": ProxyUser.traffic_limit_bytes,
+        "access_allowed": user_access_allowed_sort_expr(now),
+    }
+    column = columns[field]
+    primary = column.desc() if descending else column.asc()
+    clauses = [primary]
+    if field != "id":
+        clauses.append(ProxyUser.id.asc())
+    return clauses
+
+
 def user_to_out(user: ProxyUser) -> UserOut:
     now = datetime.now(timezone.utc)
     return UserOut(
@@ -707,6 +939,7 @@ def user_to_out(user: ProxyUser) -> UserOut:
         traffic_out_bytes=user.traffic_out_bytes,
         traffic_bytes=user.traffic_bytes,
         requests_count=user.requests_count,
+        first_connection_at=user.first_connection_at,
         created_at=user.created_at,
         expires_at=user.expires_at,
         traffic_limit_bytes=user.traffic_limit_bytes,
@@ -992,6 +1225,7 @@ def poll_mtproto_stats(session: Session) -> None:
         delta_conn = max(0, connections_total - state.last_connections)
         if delta_in or delta_out or delta_conn:
             if user_has_proxy_access(user):
+                maybe_mark_first_connection(user)
                 user.traffic_in_bytes += delta_in
                 user.traffic_out_bytes += delta_out
                 user.traffic_bytes += delta_in + delta_out
@@ -1100,10 +1334,20 @@ def traffic_worker(stop_event: threading.Event) -> None:
                     if log_events:
                         session.add_all(log_events)
 
+                    first_at_by_user: dict[str, datetime] = {}
+                    for ev in log_events:
+                        if ev.logged_at is None:
+                            continue
+                        prev = first_at_by_user.get(ev.username)
+                        if prev is None or ev.logged_at < prev:
+                            first_at_by_user[ev.username] = ev.logged_at
+
                     if pending:
                         users = session.scalars(select(ProxyUser).where(ProxyUser.username.in_(list(pending.keys())))).all()
                         for user in users:
                             req_count, traffic_in, traffic_out = pending[user.username]
+                            if req_count or traffic_in or traffic_out:
+                                maybe_mark_first_connection(user, first_at_by_user.get(user.username))
                             user.requests_count += req_count
                             user.traffic_in_bytes += traffic_in
                             user.traffic_out_bytes += traffic_out
@@ -1577,6 +1821,8 @@ def list_users(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=20),
     q: str = Query("", max_length=200),
+    sort_by: str = Query("id", max_length=32),
+    sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     _auth: str = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
@@ -1584,7 +1830,8 @@ def list_users(
     if per_page > 20:
         per_page = 20
     q_clean = q.strip()
-    stmt = select(ProxyUser).order_by(ProxyUser.id.asc())
+    now = datetime.now(timezone.utc)
+    stmt = select(ProxyUser).order_by(*users_list_order_clauses(sort_by, sort_dir, now=now))
     count_stmt = select(func.count()).select_from(ProxyUser)
     if q_clean:
         esc = q_clean.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -2039,15 +2286,28 @@ async def restore_users(file: UploadFile = File(...), _auth: str = Depends(requi
                 traffic_out_bytes=int(item.get("traffic_out_bytes", 0)),
                 traffic_bytes=int(item.get("traffic_bytes", 0)),
                 requests_count=int(item.get("requests_count", 0)),
+                first_connection_at=(
+                    datetime.fromisoformat(str(item["first_connection_at"]))
+                    if item.get("first_connection_at")
+                    else None
+                ),
                 created_at=datetime.fromisoformat(item.get("created_at")) if item.get("created_at") else datetime.now(timezone.utc),
                 expires_at=expires_at,
                 traffic_limit_bytes=traffic_limit_bytes,
             )
+            if user.first_connection_at is None and (user.traffic_bytes > 0 or user.requests_count > 0):
+                user.first_connection_at = user.created_at
             db.add(user)
         db.commit()
     with SessionLocal() as session:
         sync_proxy_config(session)
     return {"status": "restored", "format": "json"}
+
+
+@app.get("/api/traffic/summary", response_model=TrafficSummaryOut)
+def traffic_summary(_auth: str = Depends(require_auth), db: Session = Depends(get_db)):
+    """Суммарный трафик всех пользователей: за всё время и за текущий календарный месяц (UTC)."""
+    return build_traffic_summary(db)
 
 
 @app.get("/api/traffic/samples", response_model=list[TrafficSeriesPoint])

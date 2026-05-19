@@ -11,7 +11,7 @@
       rel="stylesheet"
     />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=12" />
+    <link rel="stylesheet" href="/static/styles.css?v=16" />
   </head>
   <body>
     <div id="loginOverlay" class="overlay">
@@ -69,6 +69,54 @@
         <button id="vlessTabBtn" type="button" class="tab" role="tab" aria-selected="false">VLESS</button>
         <button id="analyticsTabBtn" type="button" class="tab" role="tab" aria-selected="false">Графики</button>
       </div>
+
+      <section class="card" id="trafficSummarySection" aria-label="Сводка трафика">
+        <div class="card-head">
+          <h2 class="card-title">Трафик всех пользователей</h2>
+          <p class="card-desc">Суммарный расход по всем учётным записям</p>
+          <p id="summaryFirstConnection" class="traffic-summary-first-connect card-desc"></p>
+        </div>
+        <div class="card-body traffic-summary-body">
+          <div class="traffic-summary-grid">
+            <article class="traffic-summary-block">
+              <h3 class="traffic-summary-heading">За всё время</h3>
+              <dl class="traffic-summary-metrics">
+                <div class="traffic-summary-metric">
+                  <dt>Входящий</dt>
+                  <dd id="summaryAllTimeIn">—</dd>
+                </div>
+                <div class="traffic-summary-metric">
+                  <dt>Исходящий</dt>
+                  <dd id="summaryAllTimeOut">—</dd>
+                </div>
+                <div class="traffic-summary-metric traffic-summary-metric-total">
+                  <dt>Всего</dt>
+                  <dd id="summaryAllTimeTotal" class="traffic-summary-total-dd">—</dd>
+                </div>
+              </dl>
+            </article>
+            <article class="traffic-summary-block">
+              <h3 class="traffic-summary-heading">
+                За месяц <span id="summaryMonthLabel" class="traffic-summary-period">—</span>
+              </h3>
+              <dl class="traffic-summary-metrics">
+                <div class="traffic-summary-metric">
+                  <dt>Входящий</dt>
+                  <dd id="summaryMonthIn">—</dd>
+                </div>
+                <div class="traffic-summary-metric">
+                  <dt>Исходящий</dt>
+                  <dd id="summaryMonthOut">—</dd>
+                </div>
+                <div class="traffic-summary-metric traffic-summary-metric-total">
+                  <dt>Всего</dt>
+                  <dd id="summaryMonthTotal">—</dd>
+                </div>
+              </dl>
+            </article>
+          </div>
+        </div>
+      </section>
 
       <section class="card" id="usersSection">
         <div class="card-head">
@@ -195,19 +243,19 @@
           <table>
             <thead>
               <tr>
-                <th>ID</th>
-                <th>Username</th>
-                <th>HTTP</th>
-                <th>SOCKS5</th>
-                <th>MTProto</th>
-                <th>Входящий</th>
-                <th>Исходящий</th>
-                <th>Всего</th>
-                <th>Запросов</th>
-                <th>До</th>
-                <th>Лимит</th>
-                <th>Статус</th>
-                <th>Действия</th>
+                <th class="sortable" data-sort="id" scope="col" title="Сортировать по ID">ID <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="username" scope="col" title="Сортировать по имени">Username <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="allow_http" scope="col" title="Сортировать по HTTP">HTTP <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="allow_socks5" scope="col" title="Сортировать по SOCKS5">SOCKS5 <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="allow_mtproto" scope="col" title="Сортировать по MTProto">MTProto <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="traffic_in_bytes" scope="col" title="Сортировать по входящему трафику">Входящий <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="traffic_out_bytes" scope="col" title="Сортировать по исходящему трафику">Исходящий <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="traffic_bytes" scope="col" title="Сортировать по общему трафику; под значением — дата первого подключения">Всего <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="requests_count" scope="col" title="Сортировать по числу запросов">Запросов <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="expires_at" scope="col" title="Сортировать по сроку действия">До <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="traffic_limit_bytes" scope="col" title="Сортировать по лимиту трафика">Лимит <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="access_allowed" scope="col" title="Сортировать по статусу доступа">Статус <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th scope="col">Действия</th>
               </tr>
             </thead>
             <tbody id="usersTableBody"></tbody>
@@ -296,6 +344,6 @@
         </div>
       </div>
     </div>
-    <script src="/static/app.js?v=20"></script>
+    <script src="/static/app.js?v=24"></script>
   </body>
 </html>
