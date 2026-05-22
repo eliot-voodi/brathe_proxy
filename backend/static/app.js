@@ -55,6 +55,20 @@ const copyHttpCredsBtn = document.getElementById("copyHttpCredsBtn");
 const closeHttpCredsBtn = document.getElementById("closeHttpCredsBtn");
 const limitsModal = document.getElementById("limitsModal");
 const limitsForm = document.getElementById("limitsForm");
+const mtprotoModal = document.getElementById("mtprotoModal");
+const mtprotoForm = document.getElementById("mtprotoForm");
+const mtprotoUserId = document.getElementById("mtprotoUserId");
+const mtprotoModalLead = document.getElementById("mtprotoModalLead");
+const editAllowMtproto = document.getElementById("editAllowMtproto");
+const mtprotoEditDetails = document.getElementById("mtprotoEditDetails");
+const editRegenerateMtprotoSecret = document.getElementById("editRegenerateMtprotoSecret");
+const mtprotoBotHexValue = document.getElementById("mtprotoBotHexValue");
+const copyMtprotoBotHexBtn = document.getElementById("copyMtprotoBotHexBtn");
+const editMtprotoAdEnabled = document.getElementById("editMtprotoAdEnabled");
+const mtprotoEditAdFields = document.getElementById("mtprotoEditAdFields");
+const editMtprotoAdChannel = document.getElementById("editMtprotoAdChannel");
+const editMtprotoAdTag = document.getElementById("editMtprotoAdTag");
+const closeMtprotoBtn = document.getElementById("closeMtprotoBtn");
 const limitsUserId = document.getElementById("limitsUserId");
 const limitsExpiresInput = document.getElementById("limitsExpiresInput");
 const limitsGbInput = document.getElementById("limitsGbInput");
@@ -63,6 +77,10 @@ const usersPagination = document.getElementById("usersPagination");
 const usersPagePrev = document.getElementById("usersPagePrev");
 const usersPageNext = document.getElementById("usersPageNext");
 const usersPageInfo = document.getElementById("usersPageInfo");
+const allowMtprotoCheckbox = document.getElementById("allowMtprotoCheckbox");
+const mtprotoAdBlock = document.getElementById("mtprotoAdBlock");
+const mtprotoAdEnabledCheckbox = document.getElementById("mtprotoAdEnabledCheckbox");
+const mtprotoAdFields = document.getElementById("mtprotoAdFields");
 
 let panelMeta = {
   proxy_public_host: "127.0.0.1",
@@ -75,6 +93,7 @@ let panelMeta = {
   vless_singbox_restart_pending: false,
 };
 let currentHttpCredsText = "";
+let currentMtprotoBotHex = "";
 let usersCache = [];
 let usersTableTotal = 0;
 const USERS_PAGE_SIZE = 20;
@@ -338,6 +357,56 @@ function closeLimitsModal() {
   limitsModal.style.display = "none";
 }
 
+function mtprotoBotHexFromSecret(secret) {
+  const s = String(secret || "").trim().toLowerCase();
+  if ((s.startsWith("ee") || s.startsWith("dd")) && s.length >= 34) {
+    return s.slice(2, 34);
+  }
+  return "";
+}
+
+function syncMtprotoEditModalVisibility() {
+  if (!editAllowMtproto || !mtprotoEditDetails) return;
+  const on = editAllowMtproto.checked;
+  mtprotoEditDetails.classList.toggle("hidden", !on);
+  if (!on && editRegenerateMtprotoSecret) {
+    editRegenerateMtprotoSecret.checked = false;
+  }
+  if (mtprotoEditAdFields && editMtprotoAdEnabled) {
+    mtprotoEditAdFields.classList.toggle("hidden", !on || !editMtprotoAdEnabled.checked);
+  }
+}
+
+function refreshMtprotoBotHexDisplay(secret) {
+  currentMtprotoBotHex = mtprotoBotHexFromSecret(secret);
+  if (mtprotoBotHexValue) {
+    mtprotoBotHexValue.textContent = currentMtprotoBotHex || "—";
+  }
+}
+
+function openMtprotoModal(user) {
+  if (!mtprotoModal || !mtprotoForm || !mtprotoUserId) return;
+  mtprotoUserId.value = String(user.id);
+  if (mtprotoModalLead) {
+    mtprotoModalLead.textContent = `Пользователь: ${user.username}`;
+  }
+  if (editAllowMtproto) editAllowMtproto.checked = !!user.allow_mtproto;
+  if (editRegenerateMtprotoSecret) editRegenerateMtprotoSecret.checked = false;
+  if (editMtprotoAdEnabled) editMtprotoAdEnabled.checked = !!user.mtproto_ad_enabled;
+  if (editMtprotoAdChannel) editMtprotoAdChannel.value = user.mtproto_ad_channel || "";
+  if (editMtprotoAdTag) editMtprotoAdTag.value = user.mtproto_ad_tag || "";
+  refreshMtprotoBotHexDisplay(user.mtproto_secret);
+  syncMtprotoEditModalVisibility();
+  mtprotoModal.classList.remove("hidden");
+  mtprotoModal.style.display = "flex";
+}
+
+function closeMtprotoModal() {
+  if (!mtprotoModal) return;
+  mtprotoModal.classList.add("hidden");
+  mtprotoModal.style.display = "none";
+}
+
 function formatDateTimeLocal(d) {
   const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -399,7 +468,7 @@ function userRow(user) {
     <td data-label="Username"><strong>${user.username}</strong></td>
     <td data-label="HTTP">${user.allow_http ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'}</td>
     <td data-label="SOCKS5">${user.allow_socks5 ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'}</td>
-    <td data-label="MTProto">${user.allow_mtproto ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'}</td>
+    <td data-label="MTProto">${user.allow_mtproto ? (user.mtproto_ad_enabled ? '<span class="cell-yes" title="Реклама вкл.">MTProto+</span>' : '<span class="cell-yes">Да</span>') : '<span class="cell-no">—</span>'}</td>
     <td class="cell-num" data-label="Входящий">${formatBytes(user.traffic_in_bytes)}</td>
     <td class="cell-num" data-label="Исходящий">${formatBytes(user.traffic_out_bytes)}</td>
     <td class="cell-num cell-total-traffic" data-label="Всего">${formatTotalTrafficCell(user)}</td>
@@ -413,6 +482,7 @@ function userRow(user) {
         <button class="btn btn-compact" data-action="toggle-socks">${user.allow_socks5 ? "SOCKS off" : "SOCKS on"}</button>
         <button class="btn btn-compact" data-action="toggle-mtproto">${user.allow_mtproto ? "MTProto off" : "MTProto on"}</button>
         <button class="btn btn-compact" data-action="limits">Срок / лимит</button>
+        <button class="btn btn-compact" data-action="edit-mtproto">MTProto…</button>
         <button class="btn btn-compact" data-action="http-creds">HTTP</button>
         <button class="btn btn-copy btn-compact" data-action="copy-socks">TG SOCKS5</button>
         <button class="btn btn-copy btn-compact" data-action="copy-mtproto">TG MTProto</button>
@@ -432,6 +502,9 @@ function userRow(user) {
   });
   tr.querySelector('[data-action="limits"]').addEventListener("click", () => {
     openLimitsModal(user);
+  });
+  tr.querySelector('[data-action="edit-mtproto"]').addEventListener("click", () => {
+    openMtprotoModal(user);
   });
   tr.querySelector('[data-action="delete"]').addEventListener("click", async () => {
     if (!confirm(`Удалить пользователя ${user.username}?`)) return;
@@ -780,6 +853,25 @@ function showLoggedOutUI() {
   loginOverlay.classList.remove("hidden");
 }
 
+function syncMtprotoAdFormVisibility() {
+  if (!allowMtprotoCheckbox || !mtprotoAdBlock) return;
+  const mtOn = allowMtprotoCheckbox.checked;
+  mtprotoAdBlock.classList.toggle("hidden", !mtOn);
+  if (!mtOn && mtprotoAdEnabledCheckbox) {
+    mtprotoAdEnabledCheckbox.checked = false;
+  }
+  if (mtprotoAdFields && mtprotoAdEnabledCheckbox) {
+    mtprotoAdFields.classList.toggle("hidden", !mtOn || !mtprotoAdEnabledCheckbox.checked);
+  }
+}
+
+if (allowMtprotoCheckbox) {
+  allowMtprotoCheckbox.addEventListener("change", syncMtprotoAdFormVisibility);
+}
+if (mtprotoAdEnabledCheckbox) {
+  mtprotoAdEnabledCheckbox.addEventListener("change", syncMtprotoAdFormVisibility);
+}
+
 createForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const formData = new FormData(createForm);
@@ -789,7 +881,20 @@ createForm.addEventListener("submit", async (e) => {
     allow_http: formData.get("allow_http") === "on",
     allow_socks5: formData.get("allow_socks5") === "on",
     allow_mtproto: formData.get("allow_mtproto") === "on",
+    mtproto_ad_enabled: formData.get("mtproto_ad_enabled") === "on",
   };
+  if (payload.mtproto_ad_enabled) {
+    const channel = String(formData.get("mtproto_ad_channel") || "").trim();
+    const adTag = String(formData.get("mtproto_ad_tag") || "").trim();
+    if (!channel) {
+      setStatus("Укажите ссылку на канал или группу для рекламы", true);
+      return;
+    }
+    payload.mtproto_ad_channel = channel;
+    if (adTag) {
+      payload.mtproto_ad_tag = adTag.toLowerCase();
+    }
+  }
   if (pwdRaw) {
     payload.password = pwdRaw;
   }
@@ -819,6 +924,7 @@ createForm.addEventListener("submit", async (e) => {
     createForm.querySelector('input[name="allow_http"]').checked = true;
     createForm.querySelector('input[name="allow_socks5"]').checked = true;
     createForm.querySelector('input[name="allow_mtproto"]').checked = false;
+    syncMtprotoAdFormVisibility();
     await loadUsers();
     await loadTrafficChart();
   } catch (err) {
@@ -1184,6 +1290,77 @@ limitsModal.addEventListener("click", (event) => {
     closeLimitsModal();
   }
 });
+
+if (editAllowMtproto) {
+  editAllowMtproto.addEventListener("change", syncMtprotoEditModalVisibility);
+}
+if (editMtprotoAdEnabled) {
+  editMtprotoAdEnabled.addEventListener("change", syncMtprotoEditModalVisibility);
+}
+
+if (mtprotoForm) {
+  mtprotoForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const id = mtprotoUserId?.value;
+    if (!id) return;
+    const allowMt = editAllowMtproto?.checked === true;
+    const payload = { allow_mtproto: allowMt };
+    if (editRegenerateMtprotoSecret?.checked) {
+      payload.regenerate_mtproto_secret = true;
+    }
+    const adOn = editMtprotoAdEnabled?.checked === true;
+    payload.mtproto_ad_enabled = adOn;
+    if (adOn) {
+      const channel = String(editMtprotoAdChannel?.value || "").trim();
+      if (!channel) {
+        setStatus("Укажите ссылку на канал для рекламы", true);
+        return;
+      }
+      payload.mtproto_ad_channel = channel;
+      const tag = String(editMtprotoAdTag?.value || "").trim();
+      payload.mtproto_ad_tag = tag ? tag.toLowerCase() : null;
+    }
+    try {
+      await api(`/api/users/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setStatus("Настройки MTProto сохранены");
+      closeMtprotoModal();
+      await loadUsers();
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  });
+}
+
+if (copyMtprotoBotHexBtn) {
+  copyMtprotoBotHexBtn.addEventListener("click", async () => {
+    if (!currentMtprotoBotHex) {
+      setStatus("Нет секрета для бота: включите MTProto или сгенерируйте новый секрет", true);
+      return;
+    }
+    const copied = await copyToClipboard(currentMtprotoBotHex);
+    if (copied) {
+      setStatus("32 hex для @MTProxybot скопированы");
+    } else {
+      setStatus(`Скопируйте вручную: ${currentMtprotoBotHex}`, true);
+    }
+  });
+}
+
+if (closeMtprotoBtn) {
+  closeMtprotoBtn.addEventListener("click", closeMtprotoModal);
+}
+
+if (mtprotoModal) {
+  mtprotoModal.addEventListener("click", (event) => {
+    if (event.target === mtprotoModal) {
+      closeMtprotoModal();
+    }
+  });
+}
 
 httpCredsModal.addEventListener("click", (event) => {
   if (event.target === httpCredsModal) {

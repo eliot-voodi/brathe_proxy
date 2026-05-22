@@ -136,7 +136,24 @@
           <div class="proto-toggles" role="group" aria-label="Протоколы">
             <label class="check-tile"><input type="checkbox" name="allow_http" checked /> <span>HTTP</span></label>
             <label class="check-tile"><input type="checkbox" name="allow_socks5" checked /> <span>SOCKS5</span></label>
-            <label class="check-tile"><input type="checkbox" name="allow_mtproto" /> <span>MTProto</span></label>
+            <label class="check-tile"><input type="checkbox" name="allow_mtproto" id="allowMtprotoCheckbox" /> <span>MTProto</span></label>
+          </div>
+          <div id="mtprotoAdBlock" class="mtproto-ad-block hidden" aria-live="polite">
+            <label class="check-row">
+              <input type="checkbox" name="mtproto_ad_enabled" id="mtprotoAdEnabledCheckbox" />
+              <span>Включить рекламу (спонсорский канал)</span>
+            </label>
+            <div id="mtprotoAdFields" class="mtproto-ad-fields hidden">
+              <label class="field">
+                <span class="field-label">Ссылка на канал или группу <span class="field-hint">публичная, t.me/…</span></span>
+                <input name="mtproto_ad_channel" type="url" placeholder="https://t.me/your_channel" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span class="field-label">Ad tag <span class="field-hint">необяз., 32 hex от @MTProxybot</span></span>
+                <input name="mtproto_ad_tag" type="text" maxlength="32" pattern="[0-9a-fA-F]{32}" placeholder="00112233445566778899aabbccddeeff" autocomplete="off" />
+              </label>
+              <p class="field-hint mtproto-ad-hint">Канал привязывается в @MTProxybot («Set promotion»). Ad tag нужен прокси для показа рекламы.</p>
+            </div>
           </div>
           <div class="row row-wrap">
             <label class="field">
@@ -322,6 +339,51 @@
       </div>
     </div>
 
+    <div id="mtprotoModal" class="modal hidden" style="display: none" aria-modal="true" role="dialog">
+      <div class="modal-card modal-card-wide">
+        <h3 class="modal-title">MTProto</h3>
+        <p class="hint modal-lead" id="mtprotoModalLead">Настройки прокси Telegram для выбранного пользователя.</p>
+        <form id="mtprotoForm" class="create-form">
+          <input type="hidden" name="user_id" id="mtprotoUserId" />
+          <label class="check-row">
+            <input type="checkbox" name="edit_allow_mtproto" id="editAllowMtproto" />
+            <span>Включить MTProto для этого пользователя</span>
+          </label>
+          <div id="mtprotoEditDetails" class="mtproto-edit-details hidden">
+            <label class="check-row">
+              <input type="checkbox" name="edit_regenerate_mtproto_secret" id="editRegenerateMtprotoSecret" />
+              <span>Сгенерировать новый секрет (старая tg:// ссылка перестанет работать)</span>
+            </label>
+            <div class="kv mtproto-bot-secret-row">
+              <span>Секрет для @MTProxybot (32 hex)</span>
+              <div class="row-actions">
+                <code id="mtprotoBotHexValue" class="mtproto-bot-hex">—</code>
+                <button type="button" class="btn btn-copy btn-compact" id="copyMtprotoBotHexBtn">Копировать</button>
+              </div>
+            </div>
+            <label class="check-row">
+              <input type="checkbox" name="edit_mtproto_ad_enabled" id="editMtprotoAdEnabled" />
+              <span>Включить рекламу (спонсорский канал)</span>
+            </label>
+            <div id="mtprotoEditAdFields" class="mtproto-ad-fields hidden">
+              <label class="field">
+                <span class="field-label">Ссылка на канал или группу <span class="field-hint">публичная, t.me/…</span></span>
+                <input name="edit_mtproto_ad_channel" id="editMtprotoAdChannel" type="url" placeholder="https://t.me/your_channel" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span class="field-label">Ad tag <span class="field-hint">необяз., 32 hex от @MTProxybot</span></span>
+                <input name="edit_mtproto_ad_tag" id="editMtprotoAdTag" type="text" maxlength="32" pattern="[0-9a-fA-F]{32}" placeholder="00112233445566778899aabbccddeeff" autocomplete="off" />
+              </label>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+            <button type="button" class="btn btn-ghost" id="closeMtprotoBtn">Отмена</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <div id="httpCredsModal" class="modal hidden" style="display: none" aria-modal="true" role="dialog">
       <div class="modal-card">
         <h3 class="modal-title">HTTP-прокси</h3>
@@ -344,6 +406,6 @@
         </div>
       </div>
     </div>
-    <script src="/static/app.js?v=25"></script>
+    <script src="/static/app.js?v=26"></script>
   </body>
 </html>

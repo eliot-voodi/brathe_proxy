@@ -76,6 +76,7 @@ TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES = int(os.environ.get("TRAFFIC_SAMPLES_PRUNE_MA
 SESSION_COOKIE_NAME = "panel_session"
 SESSION_TTL_SECONDS = 12 * 60 * 60
 MAX_IMPORT_ROWS = 500
+_MTPROTO_AD_TAG_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 
 IMPORT_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "username": ("username", "логин", "user", "login"),
@@ -109,6 +110,9 @@ class ProxyUser(Base):
     allow_socks5: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_mtproto: Mapped[bool] = mapped_column(Boolean, default=False)
     mtproto_secret: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    mtproto_ad_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    mtproto_ad_channel: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    mtproto_ad_tag: Mapped[str | None] = mapped_column(String(32), nullable=True)
     traffic_in_bytes: Mapped[int] = mapped_column(Integer, default=0)
     traffic_out_bytes: Mapped[int] = mapped_column(Integer, default=0)
     traffic_bytes: Mapped[int] = mapped_column(Integer, default=0)
@@ -180,6 +184,9 @@ class UserCreate(BaseModel):
     allow_http: bool = True
     allow_socks5: bool = True
     allow_mtproto: bool = False
+    mtproto_ad_enabled: bool = False
+    mtproto_ad_channel: str | None = Field(default=None, max_length=512)
+    mtproto_ad_tag: str | None = Field(default=None, max_length=32)
     expires_at: datetime | None = None
     traffic_limit_bytes: int | None = Field(default=None, ge=0)
 
@@ -205,6 +212,22 @@ class UserCreate(BaseModel):
             raise ValueError("password must be at least 3 characters when set")
         return value
 
+    @field_validator("mtproto_ad_channel")
+    @classmethod
+    def mtproto_ad_channel_clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("mtproto_ad_tag")
+    @classmethod
+    def mtproto_ad_tag_clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().lower()
+        return value or None
+
     @field_validator("allow_socks5", "allow_http")
     @classmethod
     def protocol_guard(cls, value: bool) -> bool:
@@ -217,6 +240,9 @@ class UserUpdate(BaseModel):
     allow_socks5: bool | None = None
     allow_mtproto: bool | None = None
     regenerate_mtproto_secret: bool = False
+    mtproto_ad_enabled: bool | None = None
+    mtproto_ad_channel: str | None = Field(default=None, max_length=512)
+    mtproto_ad_tag: str | None = Field(default=None, max_length=32)
     expires_at: datetime | None = None
     traffic_limit_bytes: int | None = Field(default=None, ge=0)
 
@@ -228,6 +254,22 @@ class UserUpdate(BaseModel):
         if ":" in value or "|" in value:
             raise ValueError("password must not contain ':' or '|'")
         return value
+
+    @field_validator("mtproto_ad_channel")
+    @classmethod
+    def mtproto_ad_channel_clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("mtproto_ad_tag")
+    @classmethod
+    def mtproto_ad_tag_clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().lower()
+        return value or None
 
 
 class VlessSettingsOut(BaseModel):
@@ -257,6 +299,9 @@ class UserOut(BaseModel):
     allow_socks5: bool
     allow_mtproto: bool
     mtproto_secret: str | None
+    mtproto_ad_enabled: bool
+    mtproto_ad_channel: str | None
+    mtproto_ad_tag: str | None
     traffic_in_bytes: int
     traffic_out_bytes: int
     traffic_bytes: int
@@ -466,6 +511,12 @@ def init_db() -> None:
             conn.execute(text("ALTER TABLE proxy_users ADD COLUMN allow_mtproto BOOLEAN DEFAULT 0"))
         if "mtproto_secret" not in columns:
             conn.execute(text("ALTER TABLE proxy_users ADD COLUMN mtproto_secret TEXT"))
+        if "mtproto_ad_enabled" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN mtproto_ad_enabled BOOLEAN DEFAULT 0"))
+        if "mtproto_ad_channel" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN mtproto_ad_channel TEXT"))
+        if "mtproto_ad_tag" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN mtproto_ad_tag TEXT"))
         conn.execute(
             text(
                 "UPDATE proxy_users "
@@ -935,6 +986,9 @@ def user_to_out(user: ProxyUser) -> UserOut:
         allow_socks5=user.allow_socks5,
         allow_mtproto=user.allow_mtproto,
         mtproto_secret=user.mtproto_secret,
+        mtproto_ad_enabled=bool(user.mtproto_ad_enabled),
+        mtproto_ad_channel=user.mtproto_ad_channel,
+        mtproto_ad_tag=user.mtproto_ad_tag,
         traffic_in_bytes=user.traffic_in_bytes,
         traffic_out_bytes=user.traffic_out_bytes,
         traffic_bytes=user.traffic_bytes,
@@ -1032,6 +1086,62 @@ def generate_proxy_user_password() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(20))
 
 
+def normalize_mtproto_ad_channel(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        raise ValueError("mtproto_ad_channel is required when advertising is enabled")
+    if value.startswith("@"):
+        value = f"https://t.me/{value[1:]}"
+    elif value.startswith("t.me/"):
+        value = f"https://{value}"
+    elif not value.startswith(("http://", "https://")):
+        raise ValueError("mtproto_ad_channel must be a public t.me link or @username")
+    parsed = urlparse(value)
+    host = (parsed.netloc or "").lower()
+    if host not in ("t.me", "telegram.me", "www.t.me"):
+        raise ValueError("mtproto_ad_channel must point to t.me or telegram.me")
+    path = (parsed.path or "").strip("/")
+    if not path or path.startswith("+"):
+        raise ValueError("use a public channel/group link (not a private invite)")
+    return value
+
+
+def normalize_mtproto_ad_tag(raw: str) -> str:
+    value = raw.strip().lower()
+    if not _MTPROTO_AD_TAG_RE.fullmatch(value):
+        raise ValueError("mtproto_ad_tag must be exactly 32 hexadecimal characters (from @MTProxybot)")
+    return value
+
+
+def validate_mtproto_ad_settings(
+    *,
+    allow_mtproto: bool,
+    ad_enabled: bool,
+    ad_channel: str | None,
+    ad_tag: str | None,
+) -> tuple[bool, str | None, str | None]:
+    if not ad_enabled:
+        return False, None, None
+    if not allow_mtproto:
+        raise ValueError("MTProto must be enabled to use sponsored channel advertising")
+    if not ad_channel or not ad_channel.strip():
+        raise ValueError("mtproto_ad_channel is required when advertising is enabled")
+    channel = normalize_mtproto_ad_channel(ad_channel)
+    tag: str | None = None
+    if ad_tag and ad_tag.strip():
+        tag = normalize_mtproto_ad_tag(ad_tag)
+    return True, channel, tag
+
+
+def mtproto_secret_to_telemt_user_secret(mtproto_secret: str) -> str:
+    secret = (mtproto_secret or "").strip().lower()
+    if secret.startswith(("ee", "dd")) and len(secret) >= 34:
+        return secret[2:34]
+    if len(secret) == 32 and all(ch in "0123456789abcdef" for ch in secret):
+        return secret
+    return secrets.token_hex(16)
+
+
 def generate_mtproto_secret() -> str:
     # mtg-multi accepts Telegram transport secrets:
     # - classic secure mode: dd + 16 random bytes (34 hex chars total)
@@ -1094,45 +1204,68 @@ def restore_mtproto_secret(raw_secret: str | None, raw_link: str | None = None) 
 def render_mtproto_config(
     users: list[ProxyUser], settings: PanelSettings, *, apply_upstream_chain: bool
 ) -> str:
+    """telemt config: per-user secrets, optional per-user ad tags, optional SOCKS upstream."""
     now = datetime.now(timezone.utc)
-    enabled_users = [
-        (u.username, str(u.mtproto_secret))
-        for u in users
-        if u.allow_mtproto and u.mtproto_secret and user_has_proxy_access(u, now)
-    ]
+    enabled_users: list[tuple[str, str]] = []
+    ad_tags: list[tuple[str, str]] = []
+    for u in users:
+        if not u.allow_mtproto or not u.mtproto_secret or not user_has_proxy_access(u, now):
+            continue
+        enabled_users.append((u.username, mtproto_secret_to_telemt_user_secret(str(u.mtproto_secret))))
+        if u.mtproto_ad_enabled and u.mtproto_ad_tag:
+            ad_tags.append((u.username, str(u.mtproto_ad_tag).lower()))
     if not enabled_users:
-        # Keep proxy up with one synthetic secret to avoid service crash.
-        enabled_users = [("disabled_user", generate_mtproto_secret())]
-    vless_chain = apply_upstream_chain
+        enabled_users = [("disabled_user", secrets.token_hex(16))]
     lines = [
-        f'bind-to = "0.0.0.0:{MTPROTO_INTERNAL_PORT}"',
-        'api-bind-to = "0.0.0.0:9090"',
+        "# Generated by proxy-admin-panel",
         "",
+        "[general]",
+        "use_middle_proxy = true",
+        'log_level = "normal"',
+        "",
+        "[general.modes]",
+        "classic = false",
+        "secure = false",
+        "tls = true",
+        "",
+        "[censorship]",
+        f'tls_domain = "{MTPROTO_FAKE_TLS_DOMAIN}"',
+        "mask = true",
+        "tls_emulation = true",
+        "",
+        "[server]",
+        f"port = {MTPROTO_INTERNAL_PORT}",
+        "",
+        "[[server.listeners]]",
+        'ip = "0.0.0.0"',
+        "",
+        "[server.api]",
+        "enabled = true",
+        'listen = "0.0.0.0:9090"',
+        'whitelist = ["0.0.0.0/0", "::/0"]',
+        "",
+        "[access.users]",
     ]
-    # В TOML ключи после [throttle] попали бы в throttle — prefer-ip только до секций.
-    if vless_chain:
-        lines.extend(['prefer-ip = "prefer-ipv4"', ""])
-    lines.extend(
-        [
-            "[throttle]",
-            "max-connections = 5000",
-            "",
-        ]
-    )
-    if vless_chain:
-        # mtg ignores OS resolver; explicit DNS avoids failures when only the proxy path works.
+    for username, secret in enabled_users:
+        lines.append(f'"{username}" = "{secret}"')
+    lines.append("")
+    if ad_tags:
+        lines.append("[access.user_ad_tags]")
+        for username, tag in ad_tags:
+            lines.append(f'"{username}" = "{tag}"')
+        lines.append("")
+    if apply_upstream_chain:
         lines.extend(
             [
-                "[network]",
-                'dns = "udp://8.8.8.8"',
-                f'proxies = ["socks5://{SINGBOX_SOCKS_HOST}:{SINGBOX_SOCKS_PORT}"]',
+                "[[upstreams]]",
+                'type = "socks5"',
+                f'address = "{SINGBOX_SOCKS_HOST}:{SINGBOX_SOCKS_PORT}"',
+                "weight = 1",
+                "enabled = true",
                 "",
             ]
         )
-    lines.append("[secrets]")
-    for username, secret in enabled_users:
-        lines.append(f'"{username}" = "{secret}"')
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines)
 
 
 def sync_mtproto_config(session: Session, *, apply_upstream_chain: bool) -> None:
@@ -1187,20 +1320,50 @@ def sync_proxy_config(session: Session) -> None:
     sync_mtproto_config(session, apply_upstream_chain=apply_chain)
 
 
+def _mtproto_stats_rows(payload: dict) -> list[tuple[str, dict]]:
+    users_payload = payload.get("users")
+    if isinstance(users_payload, dict):
+        return [(name, stat) for name, stat in users_payload.items() if isinstance(stat, dict)]
+    if payload.get("ok") and isinstance(payload.get("data"), list):
+        rows: list[tuple[str, dict]] = []
+        for item in payload["data"]:
+            if not isinstance(item, dict):
+                continue
+            username = str(item.get("username") or "").strip()
+            if not username:
+                continue
+            total_octets = int(item.get("total_octets", 0))
+            half = total_octets // 2
+            rows.append(
+                (
+                    username,
+                    {
+                        "bytes_in": half,
+                        "bytes_out": total_octets - half,
+                        "connections": int(item.get("current_connections", 0)),
+                    },
+                )
+            )
+        return rows
+    return []
+
+
 def poll_mtproto_stats(session: Session) -> None:
     try:
         with urllib.request.urlopen(MTPROTO_STATS_URL, timeout=2) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception:
         return
-    users_payload = payload.get("users")
-    if not isinstance(users_payload, dict):
+    if not isinstance(payload, dict):
+        return
+    stat_rows = _mtproto_stats_rows(payload)
+    if not stat_rows:
         return
 
-    db_users = session.scalars(select(ProxyUser).where(ProxyUser.username.in_(list(users_payload.keys())))).all()
+    db_users = session.scalars(select(ProxyUser).where(ProxyUser.username.in_([r[0] for r in stat_rows]))).all()
     by_username = {u.username: u for u in db_users}
-    for username, stat in users_payload.items():
-        if username not in by_username or not isinstance(stat, dict):
+    for username, stat in stat_rows:
+        if username not in by_username:
             continue
         user = by_username[username]
         if not user.allow_mtproto:
@@ -1412,6 +1575,12 @@ def _prepare_user_row_for_create(payload: UserCreate, db: Session) -> tuple[Prox
     password_generated = payload.password is None
     final_password = generate_proxy_user_password() if password_generated else payload.password
     assert final_password is not None
+    ad_enabled, ad_channel, ad_tag = validate_mtproto_ad_settings(
+        allow_mtproto=payload.allow_mtproto,
+        ad_enabled=payload.mtproto_ad_enabled,
+        ad_channel=payload.mtproto_ad_channel,
+        ad_tag=payload.mtproto_ad_tag,
+    )
     user = ProxyUser(
         username=payload.username,
         password=final_password,
@@ -1419,6 +1588,9 @@ def _prepare_user_row_for_create(payload: UserCreate, db: Session) -> tuple[Prox
         allow_socks5=payload.allow_socks5,
         allow_mtproto=payload.allow_mtproto,
         mtproto_secret=generate_mtproto_secret() if payload.allow_mtproto else None,
+        mtproto_ad_enabled=ad_enabled,
+        mtproto_ad_channel=ad_channel,
+        mtproto_ad_tag=ad_tag,
         expires_at=payload.expires_at,
         traffic_limit_bytes=payload.traffic_limit_bytes,
     )
@@ -2147,6 +2319,34 @@ def update_user(user_id: int, payload: UserUpdate, _auth: str = Depends(require_
         user.mtproto_secret = generate_mtproto_secret()
 
     patch = payload.model_dump(exclude_unset=True)
+    if not new_mtproto:
+        user.mtproto_ad_enabled = False
+        user.mtproto_ad_channel = None
+        user.mtproto_ad_tag = None
+    else:
+        ad_fields_touched = any(k in patch for k in ("mtproto_ad_enabled", "mtproto_ad_channel", "mtproto_ad_tag"))
+        if ad_fields_touched or payload.allow_mtproto is not None:
+            ad_enabled = (
+                payload.mtproto_ad_enabled
+                if payload.mtproto_ad_enabled is not None
+                else bool(user.mtproto_ad_enabled)
+            )
+            ad_channel = (
+                payload.mtproto_ad_channel
+                if "mtproto_ad_channel" in patch
+                else user.mtproto_ad_channel
+            )
+            ad_tag = payload.mtproto_ad_tag if "mtproto_ad_tag" in patch else user.mtproto_ad_tag
+            enabled, channel, tag = validate_mtproto_ad_settings(
+                allow_mtproto=new_mtproto,
+                ad_enabled=ad_enabled,
+                ad_channel=ad_channel,
+                ad_tag=ad_tag,
+            )
+            user.mtproto_ad_enabled = enabled
+            user.mtproto_ad_channel = channel
+            user.mtproto_ad_tag = tag
+
     if "expires_at" in patch:
         if patch["expires_at"] is not None:
             exp = patch["expires_at"]
@@ -2294,6 +2494,13 @@ async def restore_users(file: UploadFile = File(...), _auth: str = Depends(requi
                 created_at=datetime.fromisoformat(item.get("created_at")) if item.get("created_at") else datetime.now(timezone.utc),
                 expires_at=expires_at,
                 traffic_limit_bytes=traffic_limit_bytes,
+                mtproto_ad_enabled=bool(item.get("mtproto_ad_enabled", False)),
+                mtproto_ad_channel=(
+                    str(item["mtproto_ad_channel"]).strip() or None if item.get("mtproto_ad_channel") else None
+                ),
+                mtproto_ad_tag=(
+                    str(item["mtproto_ad_tag"]).strip().lower() or None if item.get("mtproto_ad_tag") else None
+                ),
             )
             if user.first_connection_at is None and (user.traffic_bytes > 0 or user.requests_count > 0):
                 user.first_connection_at = user.created_at

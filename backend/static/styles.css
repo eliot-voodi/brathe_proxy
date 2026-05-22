@@ -439,6 +439,25 @@ input::placeholder {
   accent-color: var(--accent);
 }
 
+.mtproto-ad-block {
+  margin: 12px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.mtproto-ad-fields {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.mtproto-ad-hint {
+  margin: 0;
+  line-height: 1.45;
+}
+
 .form-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1156,6 +1175,34 @@ table.users-table .row-actions .btn-compact {
   border-radius: var(--radius-md);
   padding: 22px 22px 20px;
   box-shadow: var(--shadow);
+}
+
+.modal-card-wide {
+  width: min(640px, 100%);
+}
+
+.mtproto-edit-details {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.mtproto-bot-secret-row {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.mtproto-bot-hex {
+  display: block;
+  font-size: 0.8rem;
+  word-break: break-all;
+  line-height: 1.4;
+  padding: 8px 10px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  flex: 1;
+  min-width: 0;
 }
 
 .modal-title {

@@ -35,7 +35,7 @@ services:
       MTPROTO_PUBLIC_PORT: ${MTPROTO_PUBLIC_PORT:-2053}
       MTPROTO_INTERNAL_PORT: 3443
       MTPROTO_SECRET_MODE: ${MTPROTO_SECRET_MODE:-faketls}
-      MTPROTO_STATS_URL: http://mtproto:9090/stats
+      MTPROTO_STATS_URL: http://mtproto:9090/v1/users
       MTPROTO_FAKE_TLS_DOMAIN: ${MTPROTO_FAKE_TLS_DOMAIN:-yandex.ru}
       # Low-load mode: less frequent log records and DB updates.
       PROXY_LOGDUMP_BYTES: ${PROXY_LOGDUMP_BYTES:-65536}
@@ -134,7 +134,6 @@ services:
         condition: service_healthy
     volumes:
       - mtproto_conf:/config
-    command: ["run", "/config/config.toml"]
     expose:
       - "9090"
     ports:
