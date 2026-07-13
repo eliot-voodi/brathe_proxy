@@ -313,6 +313,55 @@ body {
   margin-top: 4px;
 }
 
+.users-live-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ok);
+  text-transform: uppercase;
+}
+
+.live-badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.55);
+  animation: live-pulse 2s ease-out infinite;
+}
+
+.live-badge.paused {
+  color: var(--muted2);
+}
+
+.live-badge.paused::before {
+  animation: none;
+  opacity: 0.45;
+}
+
+@keyframes live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(74, 222, 128, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(74, 222, 128, 0);
+  }
+}
+
 h1,
 h2 {
   margin: 0;
@@ -583,6 +632,12 @@ input::placeholder {
   border: 1px solid rgba(251, 191, 36, 0.35);
 }
 
+.status-pill.info {
+  background: rgba(59, 130, 246, 0.12);
+  color: #bfdbfe;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
 .status-bar {
   margin-top: 8px;
   font-size: 0.875rem;
@@ -826,7 +881,7 @@ input::placeholder {
 table.users-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 980px;
+  min-width: 1160px;
   table-layout: auto;
 }
 
@@ -950,21 +1005,35 @@ table.users-table td:nth-child(7) {
 
 table.users-table th:nth-child(9),
 table.users-table td:nth-child(9) {
-  text-align: right;
+  text-align: center;
   padding-right: 6px;
 }
 
-/* До / лимит / статус */
+/* Онлайн / был онлайн */
 table.users-table th:nth-child(10),
-table.users-table td:nth-child(10),
+table.users-table td:nth-child(10) {
+  text-align: center;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
 table.users-table th:nth-child(11),
 table.users-table td:nth-child(11) {
+  max-width: 9.5rem;
+  font-size: 0.6875rem;
+}
+
+/* До / лимит / статус */
+table.users-table th:nth-child(12),
+table.users-table td:nth-child(12),
+table.users-table th:nth-child(13),
+table.users-table td:nth-child(13) {
   max-width: 8.5rem;
   font-size: 0.6875rem;
 }
 
-table.users-table th:nth-child(12),
-table.users-table td:nth-child(12) {
+table.users-table th:nth-child(14),
+table.users-table td:nth-child(14) {
   text-align: center;
   padding-left: 4px;
   padding-right: 4px;
@@ -1557,7 +1626,7 @@ label:not(.field):not(.check-row):not(.check-tile):not(.menu-item-label) {
   }
 
   table.users-table {
-    min-width: 980px;
+    min-width: 1160px;
   }
 }
 

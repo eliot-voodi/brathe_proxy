@@ -133,7 +133,7 @@ BRANCH_VALUE="${BRANCH:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/proxy-admin-panel}"
 ADMIN_USERNAME="admin"
 
-PANEL_PORT="$(prompt_port "Panel port" "8000")"
+PANEL_PORT="$(prompt_port "Panel port" "8003")"
 HTTP_PROXY_PORT="$(prompt_port "HTTP proxy port" "13128")"
 SOCKS_PROXY_PORT="$(prompt_port "SOCKS5 proxy port" "11080")"
 

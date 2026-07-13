@@ -47,6 +47,8 @@ services:
       TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES: ${TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES:-50}
       PRUNE_TRAFFIC_EVENTS_MAX_ROWS: ${PRUNE_TRAFFIC_EVENTS_MAX_ROWS:-500000}
       PRUNE_TRAFFIC_EVENTS_CHUNK: ${PRUNE_TRAFFIC_EVENTS_CHUNK:-100000}
+      ONLINE_LOOKBACK_SECONDS: ${ONLINE_LOOKBACK_SECONDS:-300}
+      ONLINE_MIN_SPAN_SECONDS: ${ONLINE_MIN_SPAN_SECONDS:-60}
       SINGBOX_CONFIG_PATH: /opt/sing-box/config.json
       # Должен совпадать с ipv4_address sing-box (3proxy parent не надёжен с DNS-именем при старте).
       SINGBOX_SOCKS_HOST: ${SINGBOX_SOCKS_HOST:-10.210.99.10}
@@ -68,14 +70,14 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=2)",
         ]
       interval: 5s
       timeout: 5s
       retries: 15
       start_period: 25s
     ports:
-      - "${PANEL_PORT:-8000}:8000"
+      - "${PANEL_PORT:-8003}:8003"
     networks:
       - proxy_internal
   sing-box:
@@ -90,13 +92,10 @@ services:
     command: ["run", "-c", "/etc/sing-box/config.json"]
     expose:
       - "1080"
-    # Образ alpine + bash: проверка, что SOCKS слушает (иначе mtg/proxy ловят «no such host» для sing-box).
+    # Лёгкий healthcheck без лишних fork/exec-цепочек:
+    # проверяем, что PID 1 внутри контейнера жив.
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "timeout 3 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/1080' || exit 1",
-        ]
+      test: ["CMD", "kill", "-0", "1"]
       interval: 10s
       timeout: 8s
       retries: 5

@@ -11,7 +11,7 @@
       rel="stylesheet"
     />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=18" />
+    <link rel="stylesheet" href="/static/styles.css?v=21" />
   </head>
   <body>
     <div id="loginOverlay" class="overlay">
@@ -222,6 +222,10 @@
           <div>
             <h2 class="card-title tight">Пользователи</h2>
             <p class="card-desc tight">Список, трафик и действия</p>
+            <p class="card-desc tight users-live-row">
+              <span id="onlineTotalBadge">Онлайн сейчас: —</span>
+              <span id="liveRefreshBadge" class="live-badge" title="Данные обновляются автоматически">● live</span>
+            </p>
           </div>
           <div class="actions-right">
             <input
@@ -269,6 +273,8 @@
                 <th class="sortable" data-sort="traffic_out_bytes" scope="col" title="Сортировать по исходящему трафику">Исходящий <span class="sort-indicator" aria-hidden="true"></span></th>
                 <th class="sortable" data-sort="traffic_bytes" scope="col" title="Сортировать по общему трафику; под значением — дата первого подключения">Всего <span class="sort-indicator" aria-hidden="true"></span></th>
                 <th class="sortable" data-sort="requests_count" scope="col" title="Сортировать по числу запросов">Запросов <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="is_online" scope="col" title="Сортировать по онлайн-статусу">Онлайн <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="last_online_at" scope="col" title="Сортировать по времени последней активности">Был онлайн <span class="sort-indicator" aria-hidden="true"></span></th>
                 <th class="sortable" data-sort="expires_at" scope="col" title="Сортировать по сроку действия">До <span class="sort-indicator" aria-hidden="true"></span></th>
                 <th class="sortable" data-sort="traffic_limit_bytes" scope="col" title="Сортировать по лимиту трафика">Лимит <span class="sort-indicator" aria-hidden="true"></span></th>
                 <th class="sortable" data-sort="access_allowed" scope="col" title="Сортировать по статусу доступа">Статус <span class="sort-indicator" aria-hidden="true"></span></th>
@@ -406,6 +412,6 @@
         </div>
       </div>
     </div>
-    <script src="/static/app.js?v=26"></script>
+    <script src="/static/app.js?v=29"></script>
   </body>
 </html>

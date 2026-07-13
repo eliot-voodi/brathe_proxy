@@ -12,6 +12,8 @@ const analyticsTabBtn = document.getElementById("analyticsTabBtn");
 const usersSection = document.getElementById("usersSection");
 const trafficSummarySection = document.getElementById("trafficSummarySection");
 const usersTableSection = document.getElementById("usersTableSection");
+const onlineTotalBadge = document.getElementById("onlineTotalBadge");
+const liveRefreshBadge = document.getElementById("liveRefreshBadge");
 const summaryAllTimeIn = document.getElementById("summaryAllTimeIn");
 const summaryAllTimeOut = document.getElementById("summaryAllTimeOut");
 const summaryAllTimeTotal = document.getElementById("summaryAllTimeTotal");
@@ -101,8 +103,11 @@ let usersListPage = 1;
 let usersSortBy = "id";
 let usersSortDir = "asc";
 let usersSearchDebounce = null;
-const USERS_REFRESH_INTERVAL_MS = 5000;
+const LIVE_REFRESH_INTERVAL_MS = 3000;
+const CHART_REFRESH_INTERVAL_MS = 30000;
 let usersRefreshInFlight = false;
+let liveRefreshTimer = null;
+let chartRefreshTimer = null;
 let trafficChart = null;
 
 function updateUsersSortHeaders() {
@@ -133,7 +138,7 @@ function initUsersTableSort() {
       }
       usersListPage = 1;
       updateUsersSortHeaders();
-      loadUsers();
+      loadUsers({ forceFullRender: true });
     });
   });
   updateUsersSortHeaders();
@@ -153,20 +158,70 @@ function updateUsersPaginationUi(total, totalPages) {
   if (usersPageNext) usersPageNext.disabled = usersListPage >= totalPages;
 }
 
-function renderUsersTable() {
+function renderUsersTable({ forceFullRender = false } = {}) {
   const total = usersTableTotal;
-  usersBody.innerHTML = "";
   if (!total) {
+    usersBody.innerHTML = "";
     const tr = document.createElement("tr");
     const q = String(usersSearchInput?.value || "").trim();
-    tr.innerHTML = `<td colspan="13" class="empty-users">${q ? "Ничего не найдено" : "Пользователей пока нет"}</td>`;
+    tr.innerHTML = `<td colspan="15" class="empty-users">${q ? "Ничего не найдено" : "Пользователей пока нет"}</td>`;
     usersBody.appendChild(tr);
     if (usersPagination) usersPagination.classList.add("hidden");
     return;
   }
+
   const totalPages = Math.max(1, Math.ceil(total / USERS_PAGE_SIZE));
-  usersCache.forEach((u) => usersBody.appendChild(userRow(u)));
+  const existingRows = [...usersBody.querySelectorAll("tr[data-user-id]")];
+  const canPatch =
+    !forceFullRender &&
+    existingRows.length === usersCache.length &&
+    existingRows.every((row, index) => row.dataset.userId === String(usersCache[index]?.id));
+
+  if (canPatch) {
+    existingRows.forEach((row, index) => updateUserRowInPlace(row, usersCache[index]));
+  } else {
+    usersBody.innerHTML = "";
+    usersCache.forEach((u) => usersBody.appendChild(userRow(u)));
+  }
   updateUsersPaginationUi(total, totalPages);
+}
+
+function setLiveBadgePaused(paused) {
+  if (!liveRefreshBadge) return;
+  liveRefreshBadge.classList.toggle("paused", paused);
+  liveRefreshBadge.title = paused
+    ? "Автообновление приостановлено (вкладка неактивна)"
+    : "Данные обновляются автоматически каждые 3 секунды";
+}
+
+function updateUserRowInPlace(tr, user) {
+  if (!tr || !user) return;
+  const setCell = (label, html) => {
+    const td = tr.querySelector(`td[data-label="${label}"]`);
+    if (td) td.innerHTML = html;
+  };
+  setCell("HTTP", user.allow_http ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>');
+  setCell(
+    "SOCKS5",
+    user.allow_socks5 ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'
+  );
+  setCell(
+    "MTProto",
+    user.allow_mtproto
+      ? user.mtproto_ad_enabled
+        ? '<span class="cell-yes" title="Реклама вкл.">MTProto+</span>'
+        : '<span class="cell-yes">Да</span>'
+      : '<span class="cell-no">—</span>'
+  );
+  setCell("Входящий", formatBytes(user.traffic_in_bytes));
+  setCell("Исходящий", formatBytes(user.traffic_out_bytes));
+  setCell("Всего", formatTotalTrafficCell(user));
+  setCell("Запросов", String(user.requests_count));
+  setCell("Онлайн", onlineStatusPill(user));
+  setCell("Был онлайн", formatLastOnlineCell(user));
+  setCell("До", formatExpiresCell(user));
+  setCell("Лимит", formatLimitCell(user));
+  setCell("Статус", accessStatusPill(user));
 }
 
 function openHttpCredsModal() {
@@ -258,6 +313,27 @@ function accessStatusPill(user) {
     return '<span class="status-pill ok">Активен</span>';
   }
   return '<span class="status-pill bad">Заблокирован</span>';
+}
+
+function onlineStatusPill(user) {
+  if (user.is_online) {
+    return '<span class="status-pill ok">Онлайн</span>';
+  }
+  if (user.is_idle) {
+    return '<span class="status-pill info" title="Есть недавнее подключение, но трафик меньше 1 минуты">Подключен</span>';
+  }
+  return '<span class="status-pill warn">Оффлайн</span>';
+}
+
+function formatLastOnlineCell(user) {
+  if (!user.last_online_at) return "—";
+  try {
+    const dt = new Date(user.last_online_at);
+    if (Number.isNaN(dt.getTime())) return "—";
+    return dt.toLocaleString();
+  } catch (_e) {
+    return "—";
+  }
 }
 
 function formatExpiresCell(user) {
@@ -460,6 +536,7 @@ async function api(path, options = {}) {
 
 function userRow(user) {
   const tr = document.createElement("tr");
+  tr.dataset.userId = String(user.id);
   const tgLink = `tg://socks?server=${encodeURIComponent(panelMeta.proxy_public_host)}&port=${encodeURIComponent(String(panelMeta.proxy_public_socks_port))}&user=${encodeURIComponent(user.username)}&pass=${encodeURIComponent(user.password || "")}`;
   const mtprotoLink = `tg://proxy?server=${encodeURIComponent(panelMeta.proxy_public_mtproto_host || panelMeta.proxy_public_host)}&port=${encodeURIComponent(String(panelMeta.proxy_public_mtproto_port || 14443))}&secret=${encodeURIComponent(user.mtproto_secret || "")}`;
   const accessOk = user.access_allowed !== false;
@@ -473,6 +550,8 @@ function userRow(user) {
     <td class="cell-num" data-label="Исходящий">${formatBytes(user.traffic_out_bytes)}</td>
     <td class="cell-num cell-total-traffic" data-label="Всего">${formatTotalTrafficCell(user)}</td>
     <td class="cell-num" data-label="Запросов">${user.requests_count}</td>
+    <td data-label="Онлайн">${onlineStatusPill(user)}</td>
+    <td data-label="Был онлайн">${formatLastOnlineCell(user)}</td>
     <td data-label="До">${formatExpiresCell(user)}</td>
     <td data-label="Лимит">${formatLimitCell(user)}</td>
     <td data-label="Статус">${accessStatusPill(user)}</td>
@@ -511,7 +590,7 @@ function userRow(user) {
     try {
       await api(`/api/users/${user.id}`, { method: "DELETE" });
       setStatus(`Пользователь ${user.username} удален`);
-      await loadUsers();
+      await loadUsers({ forceFullRender: true });
     } catch (e) {
       setStatus(e.message, true);
     }
@@ -577,7 +656,7 @@ async function updateUser(id, payload) {
       body: JSON.stringify(payload),
     });
     setStatus("Пользователь обновлен");
-    await loadUsers();
+    await loadUsers({ forceFullRender: true });
   } catch (e) {
     setStatus(e.message, true);
   }
@@ -603,16 +682,16 @@ function renderTrafficSummary(summary) {
   if (summaryMonthTotal) summaryMonthTotal.textContent = formatBytes(month.traffic_bytes || 0);
 }
 
-async function loadTrafficSummary() {
+async function loadTrafficSummary({ silent = false } = {}) {
   try {
     const summary = await api("/api/traffic/summary");
     renderTrafficSummary(summary);
   } catch (e) {
-    setStatus(`Ошибка сводки трафика: ${e.message}`, true);
+    if (!silent) setStatus(`Ошибка сводки трафика: ${e.message}`, true);
   }
 }
 
-async function loadUsers() {
+async function loadUsers({ forceFullRender = false, silent = false } = {}) {
   if (usersRefreshInFlight) return;
   usersRefreshInFlight = true;
   try {
@@ -625,11 +704,14 @@ async function loadUsers() {
         sort_dir: usersSortDir,
       });
       if (q) qs.set("q", q);
-      const [pageData, chartUsers] = await Promise.all([
-        api(`/api/users?${qs.toString()}`),
-        api("/api/users/chart-options"),
-        loadTrafficSummary(),
-      ]);
+      const requests = [api(`/api/users?${qs.toString()}`)];
+      if (!silent) {
+        requests.push(api("/api/users/chart-options"));
+      }
+      requests.push(loadTrafficSummary({ silent: true }));
+      const results = await Promise.all(requests);
+      const pageData = results[0];
+      const chartUsers = !silent ? results[1] : null;
       const total = Number(pageData.total) || 0;
       const perPage = Number(pageData.per_page) || USERS_PAGE_SIZE;
       const totalPages = total === 0 ? 1 : Math.max(1, Math.ceil(total / perPage));
@@ -640,14 +722,54 @@ async function loadUsers() {
       usersListPage = Number(pageData.page) || usersListPage;
       usersTableTotal = total;
       usersCache = Array.isArray(pageData.items) ? pageData.items : [];
-      renderUsersTable();
-      refreshChartUserOptions(chartUsers);
+      if (onlineTotalBadge) {
+        const onlineTotal = Number(pageData.online_total) || 0;
+        onlineTotalBadge.textContent = `Онлайн сейчас: ${onlineTotal}`;
+      }
+      renderUsersTable({ forceFullRender });
+      if (chartUsers) {
+        refreshChartUserOptions(chartUsers);
+      }
       break;
     }
   } catch (e) {
-    setStatus(`Ошибка загрузки: ${e.message}`, true);
+    if (!silent) setStatus(`Ошибка загрузки: ${e.message}`, true);
   } finally {
     usersRefreshInFlight = false;
+  }
+}
+
+async function refreshLiveData() {
+  if (appContainer.classList.contains("hidden") || document.hidden) return;
+  await loadUsers({ silent: true });
+  if (!analyticsSection.classList.contains("hidden")) {
+    await loadTrafficChart({ silent: true });
+  }
+}
+
+function startLiveRefresh() {
+  stopLiveRefresh();
+  setLiveBadgePaused(false);
+  void refreshLiveData();
+  liveRefreshTimer = setInterval(() => {
+    void refreshLiveData();
+  }, LIVE_REFRESH_INTERVAL_MS);
+  chartRefreshTimer = setInterval(() => {
+    if (appContainer.classList.contains("hidden") || document.hidden) return;
+    if (!analyticsSection.classList.contains("hidden")) {
+      void loadTrafficChart({ silent: true });
+    }
+  }, CHART_REFRESH_INTERVAL_MS);
+}
+
+function stopLiveRefresh() {
+  if (liveRefreshTimer) {
+    clearInterval(liveRefreshTimer);
+    liveRefreshTimer = null;
+  }
+  if (chartRefreshTimer) {
+    clearInterval(chartRefreshTimer);
+    chartRefreshTimer = null;
   }
 }
 
@@ -723,57 +845,63 @@ function refreshChartUserOptions(users) {
   chartUserSelect.value = users.some((u) => String(u.id) === prev) ? prev : "";
 }
 
-async function loadTrafficChart() {
-  const minutes = Number(chartRangeSelect.value || 180);
-  const userId = chartUserSelect.value;
-  const url = userId
-    ? `/api/traffic/samples?user_id=${encodeURIComponent(userId)}&minutes=${minutes}`
-    : `/api/traffic/samples?minutes=${minutes}`;
-  const points = await api(url);
-  if (!Array.isArray(points) || points.length < 2) {
-    if (trafficChart) {
-      trafficChart.destroy();
-      trafficChart = null;
+async function loadTrafficChart({ silent = false } = {}) {
+  try {
+    const minutes = Number(chartRangeSelect.value || 180);
+    const userId = chartUserSelect.value;
+    const url = userId
+      ? `/api/traffic/samples?user_id=${encodeURIComponent(userId)}&minutes=${minutes}`
+      : `/api/traffic/samples?minutes=${minutes}`;
+    const points = await api(url);
+    if (!Array.isArray(points) || points.length < 2) {
+      if (trafficChart) {
+        trafficChart.destroy();
+        trafficChart = null;
+      }
+      statIn.textContent = "IN min/max/avg: —";
+      statOut.textContent = "OUT min/max/avg: —";
+      statTotal.textContent = "TOTAL min/max/avg: —";
+      return;
     }
-    statIn.textContent = "IN min/max/avg: —";
-    statOut.textContent = "OUT min/max/avg: —";
-    statTotal.textContent = "TOTAL min/max/avg: —";
-    return;
-  }
 
-  // Zabbix-like view: draw utilization rate (delta per second), not absolute counters.
-  const labels = [];
-  const inData = [];
-  const outData = [];
-  const totalData = [];
-  for (let i = 1; i < points.length; i += 1) {
-    const prev = points[i - 1];
-    const curr = points[i];
-    const prevTs = new Date(prev.captured_at).getTime();
-    const currTs = new Date(curr.captured_at).getTime();
-    const dtSec = Math.max(1, Math.round((currTs - prevTs) / 1000));
+    const labels = [];
+    const inData = [];
+    const outData = [];
+    const totalData = [];
+    for (let i = 1; i < points.length; i += 1) {
+      const prev = points[i - 1];
+      const curr = points[i];
+      const prevTs = new Date(prev.captured_at).getTime();
+      const currTs = new Date(curr.captured_at).getTime();
+      const dtSec = Math.max(1, Math.round((currTs - prevTs) / 1000));
 
-    const deltaIn = Math.max(0, Number(curr.traffic_in_bytes) - Number(prev.traffic_in_bytes));
-    const deltaOut = Math.max(0, Number(curr.traffic_out_bytes) - Number(prev.traffic_out_bytes));
-    const deltaTotal = Math.max(0, Number(curr.traffic_bytes) - Number(prev.traffic_bytes));
+      const deltaIn = Math.max(0, Number(curr.traffic_in_bytes) - Number(prev.traffic_in_bytes));
+      const deltaOut = Math.max(0, Number(curr.traffic_out_bytes) - Number(prev.traffic_out_bytes));
+      const deltaTotal = Math.max(0, Number(curr.traffic_bytes) - Number(prev.traffic_bytes));
 
-    labels.push(new Date(curr.captured_at).toLocaleTimeString());
-    inData.push(deltaIn / dtSec);
-    outData.push(deltaOut / dtSec);
-    totalData.push(deltaTotal / dtSec);
-  }
+      labels.push(new Date(curr.captured_at).toLocaleTimeString());
+      inData.push(deltaIn / dtSec);
+      outData.push(deltaOut / dtSec);
+      totalData.push(deltaTotal / dtSec);
+    }
 
-  const inStats = metricStats(inData);
-  const outStats = metricStats(outData);
-  const totalStats = metricStats(totalData);
-  statIn.textContent = `IN min/max/avg: ${formatRate(inStats.min)} / ${formatRate(inStats.max)} / ${formatRate(inStats.avg)}`;
-  statOut.textContent = `OUT min/max/avg: ${formatRate(outStats.min)} / ${formatRate(outStats.max)} / ${formatRate(outStats.avg)}`;
-  statTotal.textContent = `TOTAL min/max/avg: ${formatRate(totalStats.min)} / ${formatRate(totalStats.max)} / ${formatRate(totalStats.avg)}`;
+    const inStats = metricStats(inData);
+    const outStats = metricStats(outData);
+    const totalStats = metricStats(totalData);
+    statIn.textContent = `IN min/max/avg: ${formatRate(inStats.min)} / ${formatRate(inStats.max)} / ${formatRate(inStats.avg)}`;
+    statOut.textContent = `OUT min/max/avg: ${formatRate(outStats.min)} / ${formatRate(outStats.max)} / ${formatRate(outStats.avg)}`;
+    statTotal.textContent = `TOTAL min/max/avg: ${formatRate(totalStats.min)} / ${formatRate(totalStats.max)} / ${formatRate(totalStats.avg)}`;
 
-  if (trafficChart) {
-    trafficChart.destroy();
-  }
-  trafficChart = new Chart(trafficChartCanvas, {
+    if (trafficChart) {
+      trafficChart.data.labels = labels;
+      trafficChart.data.datasets[0].data = inData;
+      trafficChart.data.datasets[1].data = outData;
+      trafficChart.data.datasets[2].data = totalData;
+      trafficChart.update("none");
+      return;
+    }
+
+    trafficChart = new Chart(trafficChartCanvas, {
     type: "line",
     data: {
       labels,
@@ -840,6 +968,9 @@ async function loadTrafficChart() {
       },
     },
   });
+  } catch (e) {
+    if (!silent) setStatus(`Ошибка графика: ${e.message}`, true);
+  }
 }
 
 function showLoggedInUI() {
@@ -925,7 +1056,7 @@ createForm.addEventListener("submit", async (e) => {
     createForm.querySelector('input[name="allow_socks5"]').checked = true;
     createForm.querySelector('input[name="allow_mtproto"]').checked = false;
     syncMtprotoAdFormVisibility();
-    await loadUsers();
+    await loadUsers({ forceFullRender: true });
     await loadTrafficChart();
   } catch (err) {
     setStatus(err.message, true);
@@ -936,6 +1067,7 @@ logoutBtn.addEventListener("click", async () => {
   try {
     await api("/api/auth/logout", { method: "POST" });
   } catch (_e) {}
+  stopLiveRefresh();
   showLoggedOutUI();
   setStatus("");
 });
@@ -992,7 +1124,7 @@ importUsersInput.addEventListener("change", async () => {
       if (errs.length > 5) msg += " …";
     }
     setStatus(msg, errs.length > 0 && n === 0);
-    await loadUsers();
+    await loadUsers({ forceFullRender: true });
     await loadTrafficChart();
     closeArchiveMenu();
   } catch (err) {
@@ -1090,7 +1222,7 @@ restoreInput.addEventListener("change", async () => {
     const restored = await api("/api/restore", { method: "POST", body: fd });
     const fmt = restored.format ? String(restored.format) : "";
     setStatus(fmt ? `Восстановление выполнено (${fmt})` : "Восстановление выполнено");
-    await loadUsers();
+    await loadUsers({ forceFullRender: true });
     closeArchiveMenu();
   } catch (err) {
     setStatus(`Ошибка восстановления: ${err.message}`, true);
@@ -1122,6 +1254,10 @@ analyticsTabBtn.addEventListener("click", async () => {
 });
 chartRefreshBtn.addEventListener("click", async () => {
   try {
+    if (trafficChart) {
+      trafficChart.destroy();
+      trafficChart = null;
+    }
     await loadTrafficChart();
   } catch (e) {
     setStatus(`Ошибка графика: ${e.message}`, true);
@@ -1129,6 +1265,10 @@ chartRefreshBtn.addEventListener("click", async () => {
 });
 chartUserSelect.addEventListener("change", async () => {
   try {
+    if (trafficChart) {
+      trafficChart.destroy();
+      trafficChart = null;
+    }
     await loadTrafficChart();
   } catch (e) {
     setStatus(`Ошибка графика: ${e.message}`, true);
@@ -1136,6 +1276,10 @@ chartUserSelect.addEventListener("change", async () => {
 });
 chartRangeSelect.addEventListener("change", async () => {
   try {
+    if (trafficChart) {
+      trafficChart.destroy();
+      trafficChart = null;
+    }
     await loadTrafficChart();
   } catch (e) {
     setStatus(`Ошибка графика: ${e.message}`, true);
@@ -1147,7 +1291,7 @@ if (usersSearchInput) {
     if (usersSearchDebounce) clearTimeout(usersSearchDebounce);
     usersSearchDebounce = setTimeout(() => {
       usersSearchDebounce = null;
-      loadUsers();
+      loadUsers({ forceFullRender: true });
     }, 300);
   });
 }
@@ -1156,7 +1300,7 @@ if (usersPagePrev) {
   usersPagePrev.addEventListener("click", () => {
     if (usersListPage > 1) {
       usersListPage -= 1;
-      loadUsers();
+      loadUsers({ forceFullRender: true });
     }
   });
 }
@@ -1165,7 +1309,7 @@ if (usersPageNext) {
     const totalPages = usersTableTotal === 0 ? 1 : Math.max(1, Math.ceil(usersTableTotal / USERS_PAGE_SIZE));
     if (usersListPage < totalPages) {
       usersListPage += 1;
-      loadUsers();
+      loadUsers({ forceFullRender: true });
     }
   });
 }
@@ -1210,7 +1354,8 @@ loginForm.addEventListener("submit", async (e) => {
     showLoggedInUI();
     await loadMeta();
     await loadVlessSettings();
-    await loadUsers();
+    await loadUsers({ forceFullRender: true });
+    startLiveRefresh();
     setStatus("Вы успешно вошли");
   } catch (e1) {
     loginStatusEl.textContent = `Ошибка входа: ${e1.message}`;
@@ -1224,20 +1369,22 @@ async function bootstrap() {
     showUsersTab();
     await loadMeta();
     await loadVlessSettings();
-    await loadUsers();
+    await loadUsers({ forceFullRender: true });
     await loadTrafficChart();
+    startLiveRefresh();
   } catch (_e) {
     showLoggedOutUI();
   }
-  setInterval(async () => {
-    if (!appContainer.classList.contains("hidden") && !document.hidden) {
-      await loadUsers();
-      if (!analyticsSection.classList.contains("hidden")) {
-        await loadTrafficChart();
-      }
-    }
-  }, USERS_REFRESH_INTERVAL_MS);
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    setLiveBadgePaused(true);
+    return;
+  }
+  setLiveBadgePaused(false);
+  void refreshLiveData();
+});
 
 bootstrap();
 
@@ -1277,7 +1424,7 @@ limitsForm.addEventListener("submit", async (e) => {
     });
     setStatus("Срок и лимит сохранены");
     closeLimitsModal();
-    await loadUsers();
+    await loadUsers({ forceFullRender: true });
   } catch (err) {
     setStatus(err.message, true);
   }
@@ -1328,7 +1475,7 @@ if (mtprotoForm) {
       });
       setStatus("Настройки MTProto сохранены");
       closeMtprotoModal();
-      await loadUsers();
+      await loadUsers({ forceFullRender: true });
     } catch (err) {
       setStatus(err.message, true);
     }

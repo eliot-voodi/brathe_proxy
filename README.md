@@ -136,6 +136,76 @@ docker compose --env-file .env up -d --build
 curl -fsS http://localhost:8000/health
 ```
 
+## Очистка БД от мусора
+
+В проекте есть сервисный скрипт `backend/app/cleanup_db.py` для SQLite БД панели:
+
+- удаляет «сиротские» записи в `traffic_samples` и `mtproto_user_state`;
+- удаляет старые `traffic_samples` по retention;
+- ограничивает размер `traffic_events` (удаляет самые старые записи);
+- умеет делать backup перед очисткой и запускать `VACUUM` для сжатия файла БД.
+
+Запуск с проверкой без изменений:
+
+```bash
+cd backend
+python3 app/cleanup_db.py --dry-run
+```
+
+Реальная очистка:
+
+```bash
+cd backend
+python3 app/cleanup_db.py
+```
+
+Пример с дополнительной чисткой старых событий:
+
+```bash
+cd backend
+python3 app/cleanup_db.py --events-retention-days 30
+```
+
+## Ежедневный backup в Telegram
+
+Добавлен скрипт `deploy/telegram_backup.sh`:
+
+- сначала запускает очистку БД от мусора (`backend/app/cleanup_db.py`);
+- создаёт консистентный SQLite backup (`panel.db`);
+- сжимает backup в `.gz` и отправляет файл в Telegram через бота;
+- хранит локально только последние `8` файлов (старые удаляет).
+
+1) Добавьте в `.env`:
+
+```bash
+TELEGRAM_BOT_TOKEN='123456789:your_bot_token'
+TELEGRAM_CHAT_ID='-1001234567890'
+TELEGRAM_TOPIC_ID='109234'
+```
+
+`TELEGRAM_TOPIC_ID` — опционально, нужен только если отправляете в конкретный topic (форум) группы.
+
+2) Проверка ручного запуска:
+
+```bash
+cd /opt/proxy-admin-panel
+bash deploy/telegram_backup.sh
+```
+
+3) Включить ежедневный запуск (cron):
+
+```bash
+cd /opt/proxy-admin-panel
+bash deploy/telegram_backup.sh --install-cron
+```
+
+По умолчанию cron ставится на `03:10` каждый день.  
+Можно указать своё время:
+
+```bash
+bash deploy/telegram_backup.sh --install-cron --cron-schedule "0 2 * * *"
+```
+
 ## API
 
 - `GET /api/users` - список пользователей (пагинация: `page`, `per_page`, опционально `q`)

@@ -73,6 +73,8 @@ PRUNE_TRAFFIC_EVENTS_CHUNK = int(os.environ.get("PRUNE_TRAFFIC_EVENTS_CHUNK", "1
 TRAFFIC_SAMPLES_RETENTION_HOURS = int(os.environ.get("TRAFFIC_SAMPLES_RETENTION_HOURS", "48"))
 TRAFFIC_SAMPLES_PRUNE_CHUNK = int(os.environ.get("TRAFFIC_SAMPLES_PRUNE_CHUNK", "10000"))
 TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES = int(os.environ.get("TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES", "50"))
+ONLINE_LOOKBACK_SECONDS = int(os.environ.get("ONLINE_LOOKBACK_SECONDS", "300"))
+ONLINE_MIN_SPAN_SECONDS = int(os.environ.get("ONLINE_MIN_SPAN_SECONDS", "60"))
 SESSION_COOKIE_NAME = "panel_session"
 SESSION_TTL_SECONDS = 12 * 60 * 60
 MAX_IMPORT_ROWS = 500
@@ -118,6 +120,8 @@ class ProxyUser(Base):
     traffic_bytes: Mapped[int] = mapped_column(Integer, default=0)
     requests_count: Mapped[int] = mapped_column(Integer, default=0)
     first_connection_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_online_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    online_window_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     traffic_limit_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -307,10 +311,13 @@ class UserOut(BaseModel):
     traffic_bytes: int
     requests_count: int
     first_connection_at: datetime | None = None
+    last_online_at: datetime | None = None
     created_at: datetime
     expires_at: datetime | None
     traffic_limit_bytes: int | None
     access_allowed: bool
+    is_online: bool
+    is_idle: bool = False
 
 
 class UsersPageOut(BaseModel):
@@ -318,6 +325,7 @@ class UsersPageOut(BaseModel):
     total: int
     page: int
     per_page: int
+    online_total: int = 0
 
 
 class UserCreatedOut(UserOut):
@@ -554,6 +562,32 @@ def init_db() -> None:
                     SET first_connection_at = created_at
                     WHERE (traffic_bytes > 0 OR requests_count > 0)
                       AND first_connection_at IS NULL
+                    """
+                )
+            )
+        if "last_online_at" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN last_online_at TIMESTAMP"))
+            conn.execute(
+                text(
+                    """
+                    UPDATE proxy_users
+                    SET last_online_at = (
+                        SELECT MAX(te.logged_at)
+                        FROM traffic_events te
+                        WHERE te.username = proxy_users.username AND te.logged_at IS NOT NULL
+                    )
+                    WHERE last_online_at IS NULL
+                    """
+                )
+            )
+        if "online_window_started_at" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN online_window_started_at TIMESTAMP"))
+            conn.execute(
+                text(
+                    """
+                    UPDATE proxy_users
+                    SET online_window_started_at = last_online_at
+                    WHERE online_window_started_at IS NULL AND last_online_at IS NOT NULL
                     """
                 )
             )
@@ -906,6 +940,61 @@ def maybe_mark_first_connection(user: ProxyUser, when: datetime | None = None) -
     user.first_connection_at = when or datetime.now(timezone.utc)
 
 
+def mark_user_online_activity(user: ProxyUser, when: datetime | None = None) -> None:
+    ts = when or datetime.now(timezone.utc)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    prev_last = user.last_online_at
+    if prev_last is not None and prev_last.tzinfo is None:
+        prev_last = prev_last.replace(tzinfo=timezone.utc)
+
+    if prev_last is None:
+        user.online_window_started_at = ts.replace(tzinfo=None)
+    else:
+        if ts - prev_last > timedelta(seconds=max(1, ONLINE_LOOKBACK_SECONDS)):
+            user.online_window_started_at = ts.replace(tzinfo=None)
+        elif user.online_window_started_at is None:
+            user.online_window_started_at = prev_last.replace(tzinfo=None)
+
+    last = user.last_online_at
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    if last is None or ts > last:
+        user.last_online_at = ts.replace(tzinfo=None)
+    maybe_mark_first_connection(user, ts)
+
+
+def user_is_online(user: ProxyUser, now: datetime | None = None) -> bool:
+    now = now or datetime.now(timezone.utc)
+    if user.last_online_at is None:
+        return False
+    if user.online_window_started_at is None:
+        return False
+    last = user.last_online_at
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    started = user.online_window_started_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return (
+        last >= now - timedelta(seconds=max(1, ONLINE_LOOKBACK_SECONDS))
+        and (last - started) >= timedelta(seconds=max(1, ONLINE_MIN_SPAN_SECONDS))
+    )
+
+
+def user_is_idle(user: ProxyUser, now: datetime | None = None, *, is_online: bool | None = None) -> bool:
+    now = now or datetime.now(timezone.utc)
+    online_flag = user_is_online(user, now) if is_online is None else bool(is_online)
+    if online_flag:
+        return False
+    if user.last_online_at is None:
+        return False
+    last = user.last_online_at
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return last >= now - timedelta(seconds=max(1, ONLINE_LOOKBACK_SECONDS))
+
+
 def user_has_proxy_access(user: ProxyUser, now: datetime | None = None) -> bool:
     now = now or datetime.now(timezone.utc)
     if user.expires_at is not None:
@@ -933,6 +1022,8 @@ USER_LIST_SORT_FIELDS = frozenset(
         "traffic_out_bytes",
         "traffic_bytes",
         "requests_count",
+        "is_online",
+        "last_online_at",
         "expires_at",
         "traffic_limit_bytes",
         "access_allowed",
@@ -951,6 +1042,46 @@ def user_access_allowed_sort_expr(now: datetime | None = None):
     return case((and_(expiry_ok, limit_ok), 1), else_=0)
 
 
+def online_activity_cutoff(now: datetime | None = None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    return now - timedelta(seconds=max(1, ONLINE_LOOKBACK_SECONDS))
+
+
+def online_activity_span_seconds_expr():
+    return (func.julianday(ProxyUser.last_online_at) - func.julianday(ProxyUser.online_window_started_at)) * 86400.0
+
+
+def fetch_online_usernames(db: Session, now: datetime | None = None) -> set[str]:
+    cutoff = online_activity_cutoff(now)
+    span_expr = online_activity_span_seconds_expr()
+    rows = db.execute(
+        select(ProxyUser.username).where(
+            ProxyUser.last_online_at.isnot(None),
+            ProxyUser.online_window_started_at.isnot(None),
+            ProxyUser.last_online_at >= cutoff,
+            span_expr >= max(1, ONLINE_MIN_SPAN_SECONDS),
+        )
+    ).all()
+    return {str(username) for username, in rows if isinstance(username, str) and username}
+
+
+def user_online_sort_expr(now: datetime | None = None):
+    cutoff = online_activity_cutoff(now)
+    span_expr = online_activity_span_seconds_expr()
+    return case(
+        (
+            and_(
+                ProxyUser.last_online_at.isnot(None),
+                ProxyUser.online_window_started_at.isnot(None),
+                ProxyUser.last_online_at >= cutoff,
+                span_expr >= max(1, ONLINE_MIN_SPAN_SECONDS),
+            ),
+            1,
+        ),
+        else_=0,
+    )
+
+
 def users_list_order_clauses(sort_by: str, sort_dir: str, *, now: datetime | None = None):
     field = sort_by if sort_by in USER_LIST_SORT_FIELDS else "id"
     descending = sort_dir.lower() == "desc"
@@ -964,6 +1095,8 @@ def users_list_order_clauses(sort_by: str, sort_dir: str, *, now: datetime | Non
         "traffic_out_bytes": ProxyUser.traffic_out_bytes,
         "traffic_bytes": ProxyUser.traffic_bytes,
         "requests_count": ProxyUser.requests_count,
+        "is_online": user_online_sort_expr(now),
+        "last_online_at": ProxyUser.last_online_at,
         "expires_at": ProxyUser.expires_at,
         "traffic_limit_bytes": ProxyUser.traffic_limit_bytes,
         "access_allowed": user_access_allowed_sort_expr(now),
@@ -976,8 +1109,15 @@ def users_list_order_clauses(sort_by: str, sort_dir: str, *, now: datetime | Non
     return clauses
 
 
-def user_to_out(user: ProxyUser) -> UserOut:
-    now = datetime.now(timezone.utc)
+def user_to_out(
+    user: ProxyUser,
+    *,
+    now: datetime | None = None,
+    is_online: bool | None = None,
+) -> UserOut:
+    now = now or datetime.now(timezone.utc)
+    online_value = user_is_online(user, now) if is_online is None else bool(is_online)
+    idle_value = user_is_idle(user, now, is_online=online_value)
     return UserOut(
         id=user.id,
         username=user.username,
@@ -994,10 +1134,13 @@ def user_to_out(user: ProxyUser) -> UserOut:
         traffic_bytes=user.traffic_bytes,
         requests_count=user.requests_count,
         first_connection_at=user.first_connection_at,
+        last_online_at=user.last_online_at,
         created_at=user.created_at,
         expires_at=user.expires_at,
         traffic_limit_bytes=user.traffic_limit_bytes,
         access_allowed=user_has_proxy_access(user, now),
+        is_online=online_value,
+        is_idle=idle_value,
     )
 
 
@@ -1060,10 +1203,10 @@ allow {socks_acl}
 socks -p1080
 """
 
-    # Log format: epoch|username|bytes_in|bytes_out|service
+    # Log format: epoch|username|bytes_in|bytes_out
     return f"""monitor /etc/3proxy/3proxy.cfg
 log /var/log/3proxy/traffic.log
-logformat "%t|%U|%I|%O"
+logformat "%T|%U|%I|%O"
 # Emit intermediate records for long-lived connections,
 # so panel counters update before the connection is closed.
 logdump {PROXY_LOGDUMP_BYTES} {PROXY_LOGDUMP_BYTES}
@@ -1386,9 +1529,10 @@ def poll_mtproto_stats(session: Session) -> None:
         delta_in = max(0, in_total - state.last_in_bytes)
         delta_out = max(0, out_total - state.last_out_bytes)
         delta_conn = max(0, connections_total - state.last_connections)
-        if delta_in or delta_out or delta_conn:
+        has_activity = bool(delta_in or delta_out or delta_conn or connections_total > 0)
+        if has_activity:
+            mark_user_online_activity(user)
             if user_has_proxy_access(user):
-                maybe_mark_first_connection(user)
                 user.traffic_in_bytes += delta_in
                 user.traffic_out_bytes += delta_out
                 user.traffic_bytes += delta_in + delta_out
@@ -1498,19 +1642,26 @@ def traffic_worker(stop_event: threading.Event) -> None:
                         session.add_all(log_events)
 
                     first_at_by_user: dict[str, datetime] = {}
+                    last_at_by_user: dict[str, datetime] = {}
                     for ev in log_events:
                         if ev.logged_at is None:
                             continue
                         prev = first_at_by_user.get(ev.username)
                         if prev is None or ev.logged_at < prev:
                             first_at_by_user[ev.username] = ev.logged_at
+                        prev_last = last_at_by_user.get(ev.username)
+                        if prev_last is None or ev.logged_at > prev_last:
+                            last_at_by_user[ev.username] = ev.logged_at
 
                     if pending:
                         users = session.scalars(select(ProxyUser).where(ProxyUser.username.in_(list(pending.keys())))).all()
                         for user in users:
                             req_count, traffic_in, traffic_out = pending[user.username]
                             if req_count or traffic_in or traffic_out:
-                                maybe_mark_first_connection(user, first_at_by_user.get(user.username))
+                                activity_ts = last_at_by_user.get(user.username)
+                                if activity_ts is None:
+                                    activity_ts = first_at_by_user.get(user.username)
+                                mark_user_online_activity(user, activity_ts)
                             user.requests_count += req_count
                             user.traffic_in_bytes += traffic_in
                             user.traffic_out_bytes += traffic_out
@@ -2003,6 +2154,7 @@ def list_users(
         per_page = 20
     q_clean = q.strip()
     now = datetime.now(timezone.utc)
+    online_usernames = fetch_online_usernames(db, now)
     stmt = select(ProxyUser).order_by(*users_list_order_clauses(sort_by, sort_dir, now=now))
     count_stmt = select(func.count()).select_from(ProxyUser)
     if q_clean:
@@ -2012,16 +2164,28 @@ def list_users(
         stmt = stmt.where(filt)
         count_stmt = count_stmt.where(filt)
     total = int(db.scalar(count_stmt) or 0)
+    if online_usernames:
+        online_total = int(
+            db.scalar(
+                select(func.count())
+                .select_from(ProxyUser)
+                .where(ProxyUser.username.in_(sorted(online_usernames)))
+            )
+            or 0
+        )
+    else:
+        online_total = 0
     total_pages = max(1, (total + per_page - 1) // per_page) if total else 1
     if page > total_pages:
         page = total_pages
     offset = (page - 1) * per_page
     users = db.scalars(stmt.offset(offset).limit(per_page)).all()
     return UsersPageOut(
-        items=[user_to_out(u) for u in users],
+        items=[user_to_out(u, now=now, is_online=(u.username in online_usernames)) for u in users],
         total=total,
         page=page,
         per_page=per_page,
+        online_total=online_total,
     )
 
 
@@ -2071,6 +2235,8 @@ def _user_tg_mtproto_link(mtproto_host: str, secret: str) -> str:
 @app.get("/api/users/report")
 def export_users_report(_auth: str = Depends(require_auth), db: Session = Depends(get_db)):
     users = db.scalars(select(ProxyUser).order_by(ProxyUser.id.asc())).all()
+    now = datetime.now(timezone.utc)
+    online_usernames = fetch_online_usernames(db, now)
     buffer = io.StringIO()
     writer = csv.writer(buffer, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
     writer.writerow(
@@ -2085,6 +2251,8 @@ def export_users_report(_auth: str = Depends(require_auth), db: Session = Depend
             "Исходящий_ГБ",
             "Всего_ГБ",
             "Запросов",
+            "Онлайн",
+            "Был_онлайн_UTC",
             "Создан_UTC",
             "Действует_до_UTC",
             "Лимит_ГБ",
@@ -2092,7 +2260,7 @@ def export_users_report(_auth: str = Depends(require_auth), db: Session = Depend
         ]
     )
     for u in users:
-        row = user_to_out(u)
+        row = user_to_out(u, now=now, is_online=(u.username in online_usernames))
         writer.writerow(
             [
                 row.id,
@@ -2105,6 +2273,8 @@ def export_users_report(_auth: str = Depends(require_auth), db: Session = Depend
                 _bytes_to_gib_str(row.traffic_out_bytes),
                 _bytes_to_gib_str(row.traffic_bytes),
                 row.requests_count,
+                "да" if row.is_online else "нет",
+                row.last_online_at.isoformat() if row.last_online_at else "",
                 row.created_at.isoformat() if row.created_at else "",
                 row.expires_at.isoformat() if row.expires_at else "",
                 _bytes_to_gib_str(row.traffic_limit_bytes),
@@ -2130,6 +2300,8 @@ def export_users_report_with_links(
     """Тот же отчёт, что /api/users/report, плюс колонки с готовыми ссылками (как в панели)."""
     host_value, mtproto_host = _client_public_hosts(request)
     users = db.scalars(select(ProxyUser).order_by(ProxyUser.id.asc())).all()
+    now = datetime.now(timezone.utc)
+    online_usernames = fetch_online_usernames(db, now)
     buffer = io.StringIO()
     writer = csv.writer(buffer, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
     writer.writerow(
@@ -2144,6 +2316,8 @@ def export_users_report_with_links(
             "Исходящий_ГБ",
             "Всего_ГБ",
             "Запросов",
+            "Онлайн",
+            "Был_онлайн_UTC",
             "Создан_UTC",
             "Действует_до_UTC",
             "Лимит_ГБ",
@@ -2154,7 +2328,7 @@ def export_users_report_with_links(
         ]
     )
     for u in users:
-        row = user_to_out(u)
+        row = user_to_out(u, now=now, is_online=(u.username in online_usernames))
         http_link = ""
         tg_socks = ""
         tg_mt = ""
@@ -2177,6 +2351,8 @@ def export_users_report_with_links(
                 _bytes_to_gib_str(row.traffic_out_bytes),
                 _bytes_to_gib_str(row.traffic_bytes),
                 row.requests_count,
+                "да" if row.is_online else "нет",
+                row.last_online_at.isoformat() if row.last_online_at else "",
                 row.created_at.isoformat() if row.created_at else "",
                 row.expires_at.isoformat() if row.expires_at else "",
                 _bytes_to_gib_str(row.traffic_limit_bytes),
@@ -2490,6 +2666,20 @@ async def restore_users(file: UploadFile = File(...), _auth: str = Depends(requi
                     datetime.fromisoformat(str(item["first_connection_at"]))
                     if item.get("first_connection_at")
                     else None
+                ),
+                last_online_at=(
+                    datetime.fromisoformat(str(item["last_online_at"]))
+                    if item.get("last_online_at")
+                    else None
+                ),
+                online_window_started_at=(
+                    datetime.fromisoformat(str(item["online_window_started_at"]))
+                    if item.get("online_window_started_at")
+                    else (
+                        datetime.fromisoformat(str(item["last_online_at"]))
+                        if item.get("last_online_at")
+                        else None
+                    )
                 ),
                 created_at=datetime.fromisoformat(item.get("created_at")) if item.get("created_at") else datetime.now(timezone.utc),
                 expires_at=expires_at,
