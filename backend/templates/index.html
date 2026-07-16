@@ -11,7 +11,7 @@
       rel="stylesheet"
     />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=21" />
+    <link rel="stylesheet" href="/static/styles.css?v=26" />
   </head>
   <body>
     <div id="loginOverlay" class="overlay">
@@ -67,76 +67,39 @@
           Пользователи
         </button>
         <button id="vlessTabBtn" type="button" class="tab" role="tab" aria-selected="false">VLESS</button>
-        <button id="analyticsTabBtn" type="button" class="tab" role="tab" aria-selected="false">Графики</button>
+        <button id="analyticsTabBtn" type="button" class="tab" role="tab" aria-selected="false">Трафик</button>
+        <button id="connectionsTabBtn" type="button" class="tab" role="tab" aria-selected="false">Подключения</button>
       </div>
 
-      <section class="card" id="trafficSummarySection" aria-label="Сводка трафика">
-        <div class="card-head">
-          <h2 class="card-title">Трафик всех пользователей</h2>
-          <p class="card-desc">Суммарный расход по всем учётным записям</p>
-          <p id="summaryFirstConnection" class="traffic-summary-first-connect card-desc"></p>
-        </div>
-        <div class="card-body traffic-summary-body">
-          <div class="traffic-summary-grid">
-            <article class="traffic-summary-block">
-              <h3 class="traffic-summary-heading">За всё время</h3>
-              <dl class="traffic-summary-metrics">
-                <div class="traffic-summary-metric">
-                  <dt>Входящий</dt>
-                  <dd id="summaryAllTimeIn">—</dd>
-                </div>
-                <div class="traffic-summary-metric">
-                  <dt>Исходящий</dt>
-                  <dd id="summaryAllTimeOut">—</dd>
-                </div>
-                <div class="traffic-summary-metric traffic-summary-metric-total">
-                  <dt>Всего</dt>
-                  <dd id="summaryAllTimeTotal" class="traffic-summary-total-dd">—</dd>
-                </div>
-              </dl>
-            </article>
-            <article class="traffic-summary-block">
-              <h3 class="traffic-summary-heading">
-                За месяц <span id="summaryMonthLabel" class="traffic-summary-period">—</span>
-              </h3>
-              <dl class="traffic-summary-metrics">
-                <div class="traffic-summary-metric">
-                  <dt>Входящий</dt>
-                  <dd id="summaryMonthIn">—</dd>
-                </div>
-                <div class="traffic-summary-metric">
-                  <dt>Исходящий</dt>
-                  <dd id="summaryMonthOut">—</dd>
-                </div>
-                <div class="traffic-summary-metric traffic-summary-metric-total">
-                  <dt>Всего</dt>
-                  <dd id="summaryMonthTotal">—</dd>
-                </div>
-              </dl>
-            </article>
-          </div>
-        </div>
-      </section>
-
       <section class="card" id="usersSection">
-        <div class="card-head">
-          <h2 class="card-title">Новый пользователь</h2>
-          <p class="card-desc">Логин, пароль и типы доступа</p>
-        </div>
-        <div class="card-body">
-        <form id="createUserForm" class="create-form">
-          <label class="field">
-            <span class="field-label">Имя пользователя</span>
-            <input name="username" required minlength="3" maxlength="64" autocomplete="off" />
-          </label>
-          <label class="field">
-            <span class="field-label">Пароль <span class="field-hint">пусто — сгенерировать</span></span>
-            <input name="password" type="text" maxlength="128" placeholder="20 символов" autocomplete="off" />
-          </label>
-          <div class="proto-toggles" role="group" aria-label="Протоколы">
-            <label class="check-tile"><input type="checkbox" name="allow_http" checked /> <span>HTTP</span></label>
-            <label class="check-tile"><input type="checkbox" name="allow_socks5" checked /> <span>SOCKS5</span></label>
-            <label class="check-tile"><input type="checkbox" name="allow_mtproto" id="allowMtprotoCheckbox" /> <span>MTProto</span></label>
+        <div class="card-body card-body-tight">
+        <form id="createUserForm" class="create-form create-form-inline">
+          <div class="create-form-row">
+            <div class="create-form-intro">
+              <h2 class="card-title tight">Новый пользователь</h2>
+            </div>
+            <label class="field field-compact">
+              <span class="field-label">Логин</span>
+              <input name="username" required minlength="3" maxlength="64" autocomplete="off" />
+            </label>
+            <label class="field field-compact">
+              <span class="field-label">Пароль <span class="field-hint">авто</span></span>
+              <input name="password" type="text" maxlength="128" placeholder="20 симв." autocomplete="off" />
+            </label>
+            <div class="proto-toggles proto-toggles-inline" role="group" aria-label="Протоколы">
+              <label class="check-tile check-tile-compact"><input type="checkbox" name="allow_http" checked /> <span>HTTP</span></label>
+              <label class="check-tile check-tile-compact"><input type="checkbox" name="allow_socks5" checked /> <span>SOCKS5</span></label>
+              <label class="check-tile check-tile-compact"><input type="checkbox" name="allow_mtproto" id="allowMtprotoCheckbox" /> <span>MTProto</span></label>
+            </div>
+            <label class="field field-compact field-compact-date">
+              <span class="field-label">До</span>
+              <input name="expires_at" type="datetime-local" />
+            </label>
+            <label class="field field-compact field-compact-limit">
+              <span class="field-label">Лимит, ГБ</span>
+              <input name="traffic_limit_gb" type="number" min="0" step="0.01" placeholder="∞" />
+            </label>
+            <button type="submit" class="btn btn-primary btn-compact create-form-submit">Создать</button>
           </div>
           <div id="mtprotoAdBlock" class="mtproto-ad-block hidden" aria-live="polite">
             <label class="check-row">
@@ -155,17 +118,6 @@
               <p class="field-hint mtproto-ad-hint">Канал привязывается в @MTProxybot («Set promotion»). Ad tag нужен прокси для показа рекламы.</p>
             </div>
           </div>
-          <div class="row row-wrap">
-            <label class="field">
-              <span class="field-label">Действует до <span class="field-hint">необяз.</span></span>
-              <input name="expires_at" type="datetime-local" />
-            </label>
-            <label class="field">
-              <span class="field-label">Лимит, ГБ <span class="field-hint">необяз.</span></span>
-              <input name="traffic_limit_gb" type="number" min="0" step="0.01" placeholder="Без лимита" />
-            </label>
-          </div>
-          <button type="submit" class="btn btn-primary">Создать пользователя</button>
         </form>
         </div>
       </section>
@@ -261,24 +213,19 @@
           </div>
         </div>
         <div class="table-wrap">
-          <table class="users-table">
+          <table class="users-table users-table-compact">
             <thead>
               <tr>
-                <th class="sortable" data-sort="id" scope="col" title="Сортировать по ID">ID <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="username" scope="col" title="Сортировать по имени">Username <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="allow_http" scope="col" title="Сортировать по HTTP">HTTP <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="allow_socks5" scope="col" title="Сортировать по SOCKS5">SOCKS5 <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="allow_mtproto" scope="col" title="Сортировать по MTProto">MTProto <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="traffic_in_bytes" scope="col" title="Сортировать по входящему трафику">Входящий <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="traffic_out_bytes" scope="col" title="Сортировать по исходящему трафику">Исходящий <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="traffic_bytes" scope="col" title="Сортировать по общему трафику; под значением — дата первого подключения">Всего <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="requests_count" scope="col" title="Сортировать по числу запросов">Запросов <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="is_online" scope="col" title="Сортировать по онлайн-статусу">Онлайн <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="last_online_at" scope="col" title="Сортировать по времени последней активности">Был онлайн <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="expires_at" scope="col" title="Сортировать по сроку действия">До <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="traffic_limit_bytes" scope="col" title="Сортировать по лимиту трафика">Лимит <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="access_allowed" scope="col" title="Сортировать по статусу доступа">Статус <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th scope="col">Действия</th>
+                <th class="sortable col-id" data-sort="id" scope="col" title="ID"># <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable col-user" data-sort="username" scope="col" title="Username">User <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="col-protos" scope="col" title="HTTP · SOCKS5 · MTProto">Пр.</th>
+                <th class="sortable col-traffic" data-sort="traffic_in_bytes" scope="col" title="Входящий">↓ <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable col-traffic" data-sort="traffic_out_bytes" scope="col" title="Исходящий">↑ <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable col-traffic" data-sort="traffic_bytes" scope="col" title="Всего">Σ <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable col-req" data-sort="requests_count" scope="col" title="Запросов">#req <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable col-status" data-sort="is_online" scope="col" title="Онлайн и доступ">Статус <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable col-limits" data-sort="expires_at" scope="col" title="Срок и лимит">Срок <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="col-actions" scope="col"></th>
               </tr>
             </thead>
             <tbody id="usersTableBody"></tbody>
@@ -288,6 +235,143 @@
           <button type="button" id="usersPagePrev" class="btn btn-secondary btn-compact">Назад</button>
           <span id="usersPageInfo" class="users-page-info"></span>
           <button type="button" id="usersPageNext" class="btn btn-secondary btn-compact">Вперёд</button>
+        </div>
+      </section>
+
+      <section class="card hidden" id="connectionsSection" aria-label="Активные подключения">
+        <div class="card-head">
+          <h2 class="card-title">Активные подключения</h2>
+          <p class="card-desc">Текущее число сессий по протоколам для каждого пользователя</p>
+          <p class="card-desc tight users-live-row">
+            <span id="connectionsUsersBadge">Пользователей с сессиями: —</span>
+            <span id="connectionsLiveBadge" class="live-badge" title="Данные обновляются автоматически">● live</span>
+          </p>
+        </div>
+        <div class="card-body traffic-summary-body">
+          <div class="traffic-summary-grid connections-summary-grid">
+            <article class="traffic-summary-block">
+              <h3 class="traffic-summary-heading">HTTP</h3>
+              <dl class="traffic-summary-metrics">
+                <div class="traffic-summary-metric traffic-summary-metric-total">
+                  <dt>Сессий</dt>
+                  <dd id="connectionsTotalHttp" class="traffic-summary-total-dd traffic-summary-conn-dd">—</dd>
+                </div>
+              </dl>
+            </article>
+            <article class="traffic-summary-block">
+              <h3 class="traffic-summary-heading">SOCKS5</h3>
+              <dl class="traffic-summary-metrics">
+                <div class="traffic-summary-metric traffic-summary-metric-total">
+                  <dt>Сессий</dt>
+                  <dd id="connectionsTotalSocks" class="traffic-summary-total-dd traffic-summary-conn-dd">—</dd>
+                </div>
+              </dl>
+            </article>
+            <article class="traffic-summary-block">
+              <h3 class="traffic-summary-heading">MTProto</h3>
+              <dl class="traffic-summary-metrics">
+                <div class="traffic-summary-metric traffic-summary-metric-total">
+                  <dt>TCP-сессий</dt>
+                  <dd id="connectionsTotalMtproto" class="traffic-summary-total-dd traffic-summary-conn-dd">—</dd>
+                </div>
+              </dl>
+            </article>
+            <article class="traffic-summary-block">
+              <h3 class="traffic-summary-heading">Всего</h3>
+              <dl class="traffic-summary-metrics">
+                <div class="traffic-summary-metric traffic-summary-metric-total">
+                  <dt>Сессий</dt>
+                  <dd id="connectionsTotalAll" class="traffic-summary-total-dd traffic-summary-conn-dd">—</dd>
+                </div>
+              </dl>
+            </article>
+          </div>
+        </div>
+        <div class="actions">
+          <div>
+            <h2 class="card-title tight">По пользователям</h2>
+            <p class="card-desc tight">Сортировка и поиск по username</p>
+          </div>
+          <div class="actions-right">
+            <input
+              id="connectionsSearchInput"
+              class="input-small users-search"
+              type="search"
+              placeholder="Поиск по username..."
+              autocomplete="off"
+              spellcheck="false"
+              aria-label="Поиск пользователя"
+            />
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="users-table">
+            <thead>
+              <tr>
+                <th class="sortable" data-sort="id" scope="col">ID <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="username" scope="col">Username <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="connections_http" scope="col">HTTP <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="connections_socks5" scope="col">SOCKS5 <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="connections_mtproto" scope="col">MTProto <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="connections_total" scope="col">Всего <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="is_online" scope="col">Онлайн <span class="sort-indicator" aria-hidden="true"></span></th>
+              </tr>
+            </thead>
+            <tbody id="connectionsTableBody"></tbody>
+          </table>
+        </div>
+        <div id="connectionsPagination" class="users-pagination hidden" aria-label="Страницы списка подключений">
+          <button type="button" id="connectionsPagePrev" class="btn btn-secondary btn-compact">Назад</button>
+          <span id="connectionsPageInfo" class="users-page-info"></span>
+          <button type="button" id="connectionsPageNext" class="btn btn-secondary btn-compact">Вперёд</button>
+        </div>
+      </section>
+
+      <section class="card hidden" id="trafficSummarySection" aria-label="Сводка трафика">
+        <div class="card-head">
+          <h2 class="card-title">Трафик всех пользователей</h2>
+          <p class="card-desc">Суммарный расход по всем учётным записям</p>
+          <p id="summaryFirstConnection" class="traffic-summary-first-connect card-desc"></p>
+        </div>
+        <div class="card-body traffic-summary-body">
+          <div class="traffic-summary-grid">
+            <article class="traffic-summary-block">
+              <h3 class="traffic-summary-heading">За всё время</h3>
+              <dl class="traffic-summary-metrics">
+                <div class="traffic-summary-metric">
+                  <dt>Входящий</dt>
+                  <dd id="summaryAllTimeIn">—</dd>
+                </div>
+                <div class="traffic-summary-metric">
+                  <dt>Исходящий</dt>
+                  <dd id="summaryAllTimeOut">—</dd>
+                </div>
+                <div class="traffic-summary-metric traffic-summary-metric-total">
+                  <dt>Всего</dt>
+                  <dd id="summaryAllTimeTotal" class="traffic-summary-total-dd">—</dd>
+                </div>
+              </dl>
+            </article>
+            <article class="traffic-summary-block">
+              <h3 class="traffic-summary-heading">
+                За месяц <span id="summaryMonthLabel" class="traffic-summary-period">—</span>
+              </h3>
+              <dl class="traffic-summary-metrics">
+                <div class="traffic-summary-metric">
+                  <dt>Входящий</dt>
+                  <dd id="summaryMonthIn">—</dd>
+                </div>
+                <div class="traffic-summary-metric">
+                  <dt>Исходящий</dt>
+                  <dd id="summaryMonthOut">—</dd>
+                </div>
+                <div class="traffic-summary-metric traffic-summary-metric-total">
+                  <dt>Всего</dt>
+                  <dd id="summaryMonthTotal">—</dd>
+                </div>
+              </dl>
+            </article>
+          </div>
         </div>
       </section>
 
@@ -412,6 +496,6 @@
         </div>
       </div>
     </div>
-    <script src="/static/app.js?v=29"></script>
+    <script src="/static/app.js?v=34"></script>
   </body>
 </html>

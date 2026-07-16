@@ -9,6 +9,7 @@ const createForm = document.getElementById("createUserForm");
 const usersTabBtn = document.getElementById("usersTabBtn");
 const vlessTabBtn = document.getElementById("vlessTabBtn");
 const analyticsTabBtn = document.getElementById("analyticsTabBtn");
+const connectionsTabBtn = document.getElementById("connectionsTabBtn");
 const usersSection = document.getElementById("usersSection");
 const trafficSummarySection = document.getElementById("trafficSummarySection");
 const usersTableSection = document.getElementById("usersTableSection");
@@ -24,6 +25,19 @@ const summaryMonthTotal = document.getElementById("summaryMonthTotal");
 const summaryFirstConnection = document.getElementById("summaryFirstConnection");
 const vlessSection = document.getElementById("vlessSection");
 const analyticsSection = document.getElementById("analyticsSection");
+const connectionsSection = document.getElementById("connectionsSection");
+const connectionsTableBody = document.getElementById("connectionsTableBody");
+const connectionsSearchInput = document.getElementById("connectionsSearchInput");
+const connectionsUsersBadge = document.getElementById("connectionsUsersBadge");
+const connectionsLiveBadge = document.getElementById("connectionsLiveBadge");
+const connectionsTotalHttp = document.getElementById("connectionsTotalHttp");
+const connectionsTotalSocks = document.getElementById("connectionsTotalSocks");
+const connectionsTotalMtproto = document.getElementById("connectionsTotalMtproto");
+const connectionsTotalAll = document.getElementById("connectionsTotalAll");
+const connectionsPagination = document.getElementById("connectionsPagination");
+const connectionsPagePrev = document.getElementById("connectionsPagePrev");
+const connectionsPageNext = document.getElementById("connectionsPageNext");
+const connectionsPageInfo = document.getElementById("connectionsPageInfo");
 const archiveMenuBtn = document.getElementById("archiveMenuBtn");
 const archiveMenu = document.getElementById("archiveMenu");
 const usersSearchInput = document.getElementById("usersSearchInput");
@@ -103,6 +117,14 @@ let usersListPage = 1;
 let usersSortBy = "id";
 let usersSortDir = "asc";
 let usersSearchDebounce = null;
+let connectionsCache = [];
+let connectionsTableTotal = 0;
+const CONNECTIONS_PAGE_SIZE = 20;
+let connectionsListPage = 1;
+let connectionsSortBy = "connections_total";
+let connectionsSortDir = "desc";
+let connectionsSearchDebounce = null;
+let connectionsRefreshInFlight = false;
 const LIVE_REFRESH_INTERVAL_MS = 3000;
 const CHART_REFRESH_INTERVAL_MS = 30000;
 let usersRefreshInFlight = false;
@@ -164,7 +186,7 @@ function renderUsersTable({ forceFullRender = false } = {}) {
     usersBody.innerHTML = "";
     const tr = document.createElement("tr");
     const q = String(usersSearchInput?.value || "").trim();
-    tr.innerHTML = `<td colspan="15" class="empty-users">${q ? "Ничего не найдено" : "Пользователей пока нет"}</td>`;
+    tr.innerHTML = `<td colspan="10" class="empty-users">${q ? "Ничего не найдено" : "Пользователей пока нет"}</td>`;
     usersBody.appendChild(tr);
     if (usersPagination) usersPagination.classList.add("hidden");
     return;
@@ -194,34 +216,227 @@ function setLiveBadgePaused(paused) {
     : "Данные обновляются автоматически каждые 3 секунды";
 }
 
+function formatProtocolConnectionsCell(tcp, ips, allowed) {
+  if (!allowed) return '<span class="cell-no">—</span>';
+  const t = Number(tcp) || 0;
+  const i = Number(ips) || 0;
+  const text = `${t} TCP · ${i} IP`;
+  if (t === 0 && i === 0) {
+    return `<span class="cell-muted" title="TCP-сессии · уникальные IP">${text}</span>`;
+  }
+  return `<span class="cell-yes" title="TCP-сессии · уникальные IP">${text}</span>`;
+}
+
+function formatProtoCell(user) {
+  const chip = (letter, on, title) =>
+    `<span class="proto-chip ${on ? "on" : "off"}" title="${title}">${letter}</span>`;
+  const mtTitle = user.allow_mtproto
+    ? user.mtproto_ad_enabled
+      ? "MTProto + реклама"
+      : "MTProto"
+    : "MTProto выкл.";
+  return `${chip("H", user.allow_http, user.allow_http ? "HTTP" : "HTTP выкл.")}${chip("S", user.allow_socks5, user.allow_socks5 ? "SOCKS5" : "SOCKS5 выкл.")}${chip("M", user.allow_mtproto, mtTitle)}`;
+}
+
+function onlineStatusPillCompact(user) {
+  const last = formatLastOnlineCell(user);
+  const title = last !== "—" ? `Был онлайн: ${last}` : "";
+  if (user.is_online) {
+    return `<span class="status-pill ok status-pill-compact" title="${title}">On</span>`;
+  }
+  if (user.is_idle) {
+    return `<span class="status-pill info status-pill-compact" title="${title}">Wait</span>`;
+  }
+  return `<span class="status-pill warn status-pill-compact" title="${title}">Off</span>`;
+}
+
+function formatUserStatusCell(user) {
+  if (user.access_allowed === false) {
+    return '<span class="status-pill bad status-pill-compact" title="Доступ заблокирован">Block</span>';
+  }
+  return onlineStatusPillCompact(user);
+}
+
+function formatLimitsCompactCell(user) {
+  const parts = [];
+  if (user.expires_at) {
+    try {
+      const d = new Date(user.expires_at);
+      if (!Number.isNaN(d.getTime())) {
+        parts.push(
+          `до ${d.toLocaleDateString("ru-RU", { day: "numeric", month: "short", year: "2-digit" })}`
+        );
+      }
+    } catch (_e) {}
+  }
+  if (user.traffic_limit_bytes != null && user.traffic_limit_bytes > 0) {
+    parts.push(`≤${formatBytes(user.traffic_limit_bytes)}`);
+  }
+  if (!parts.length) return "—";
+  const text = parts.join(" · ");
+  const detail = [];
+  if (user.expires_at) detail.push(`До: ${formatExpiresCell(user)}`);
+  if (user.traffic_limit_bytes > 0) detail.push(formatLimitCell(user));
+  return `<span class="cell-limits" title="${detail.join(" · ")}">${text}</span>`;
+}
+
+function formatTotalTrafficCellCompact(user) {
+  const total = formatBytes(user.traffic_bytes);
+  const sinceRaw = user.first_connection_at || user.created_at;
+  if (!sinceRaw || (!user.traffic_bytes && !user.requests_count)) {
+    return total;
+  }
+  try {
+    const start = new Date(sinceRaw);
+    if (Number.isNaN(start.getTime())) return total;
+    const dateStr = start.toLocaleDateString("ru-RU", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+    const daysStr = formatDaysSince(start.getTime());
+    return `<span title="С ${dateStr} · ${daysStr}">${total}</span>`;
+  } catch (_e) {
+    return total;
+  }
+}
+
+function closeAllRowMenus() {
+  document.querySelectorAll(".row-menu").forEach((menu) => menu.classList.add("hidden"));
+}
+
+function userRowActionsMenuHtml(user) {
+  return `
+    <div class="menu-wrap row-actions-menu">
+      <button type="button" class="btn btn-secondary btn-compact row-menu-btn" aria-label="Действия для ${user.username}">⋯</button>
+      <div class="menu row-menu hidden">
+        <button type="button" class="menu-item-btn" data-action="toggle-http">${user.allow_http ? "Выключить HTTP" : "Включить HTTP"}</button>
+        <button type="button" class="menu-item-btn" data-action="toggle-socks">${user.allow_socks5 ? "Выключить SOCKS5" : "Включить SOCKS5"}</button>
+        <button type="button" class="menu-item-btn" data-action="toggle-mtproto">${user.allow_mtproto ? "Выключить MTProto" : "Включить MTProto"}</button>
+        <button type="button" class="menu-item-btn" data-action="limits">Срок и лимит…</button>
+        <button type="button" class="menu-item-btn" data-action="edit-mtproto">MTProto…</button>
+        <button type="button" class="menu-item-btn" data-action="http-creds">HTTP доступ</button>
+        <button type="button" class="menu-item-btn" data-action="copy-socks">TG SOCKS5</button>
+        <button type="button" class="menu-item-btn" data-action="copy-mtproto">TG MTProto</button>
+        <button type="button" class="menu-item-btn menu-item-danger" data-action="delete">Удалить</button>
+      </div>
+    </div>`;
+}
+
+function bindUserRowActions(tr, user) {
+  const tgLink = `tg://socks?server=${encodeURIComponent(panelMeta.proxy_public_host)}&port=${encodeURIComponent(String(panelMeta.proxy_public_socks_port))}&user=${encodeURIComponent(user.username)}&pass=${encodeURIComponent(user.password || "")}`;
+  const mtprotoLink = `tg://proxy?server=${encodeURIComponent(panelMeta.proxy_public_mtproto_host || panelMeta.proxy_public_host)}&port=${encodeURIComponent(String(panelMeta.proxy_public_mtproto_port || 14443))}&secret=${encodeURIComponent(user.mtproto_secret || "")}`;
+  const accessOk = user.access_allowed !== false;
+  const menuBtn = tr.querySelector(".row-menu-btn");
+  const menu = tr.querySelector(".row-menu");
+  if (menuBtn && menu) {
+    menuBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const wasOpen = !menu.classList.contains("hidden");
+      closeAllRowMenus();
+      if (!wasOpen) menu.classList.remove("hidden");
+    });
+  }
+  const closeMenu = () => closeAllRowMenus();
+  tr.querySelector('[data-action="toggle-http"]')?.addEventListener("click", async () => {
+    closeMenu();
+    await updateUser(user.id, { allow_http: !user.allow_http });
+  });
+  tr.querySelector('[data-action="toggle-socks"]')?.addEventListener("click", async () => {
+    closeMenu();
+    await updateUser(user.id, { allow_socks5: !user.allow_socks5 });
+  });
+  tr.querySelector('[data-action="toggle-mtproto"]')?.addEventListener("click", async () => {
+    closeMenu();
+    await updateUser(user.id, { allow_mtproto: !user.allow_mtproto });
+  });
+  tr.querySelector('[data-action="limits"]')?.addEventListener("click", () => {
+    closeMenu();
+    openLimitsModal(user);
+  });
+  tr.querySelector('[data-action="edit-mtproto"]')?.addEventListener("click", () => {
+    closeMenu();
+    openMtprotoModal(user);
+  });
+  tr.querySelector('[data-action="delete"]')?.addEventListener("click", async () => {
+    closeMenu();
+    if (!confirm(`Удалить пользователя ${user.username}?`)) return;
+    try {
+      await api(`/api/users/${user.id}`, { method: "DELETE" });
+      setStatus(`Пользователь ${user.username} удален`);
+      await loadUsers({ forceFullRender: true });
+    } catch (e) {
+      setStatus(e.message, true);
+    }
+  });
+  tr.querySelector('[data-action="copy-socks"]')?.addEventListener("click", async () => {
+    closeMenu();
+    if (!accessOk) {
+      setStatus("Доступ заблокирован (срок или лимит трафика)", true);
+      return;
+    }
+    if (!user.allow_socks5) {
+      setStatus("У пользователя выключен SOCKS5", true);
+      return;
+    }
+    const copied = await copyToClipboard(tgLink);
+    if (copied) {
+      setStatus(`SOCKS5 ссылка скопирована для ${user.username}`);
+    } else {
+      setStatus(`Скопируйте вручную: ${tgLink}`, true);
+    }
+  });
+  tr.querySelector('[data-action="copy-mtproto"]')?.addEventListener("click", async () => {
+    closeMenu();
+    if (!accessOk) {
+      setStatus("Доступ заблокирован (срок или лимит трафика)", true);
+      return;
+    }
+    if (!user.allow_mtproto || !user.mtproto_secret) {
+      setStatus("У пользователя выключен MTProto", true);
+      return;
+    }
+    const copied = await copyToClipboard(mtprotoLink);
+    if (copied) {
+      setStatus(`MTProto ссылка скопирована для ${user.username}`);
+    } else {
+      setStatus(`Скопируйте вручную: ${mtprotoLink}`, true);
+    }
+  });
+  tr.querySelector('[data-action="http-creds"]')?.addEventListener("click", () => {
+    closeMenu();
+    if (!accessOk) {
+      setStatus("Доступ заблокирован (срок или лимит трафика)", true);
+      return;
+    }
+    if (!user.allow_http) {
+      setStatus("У пользователя выключен HTTP", true);
+      return;
+    }
+    const host = panelMeta.proxy_public_host;
+    const httpPort = panelMeta.proxy_public_http_port || 13128;
+    const url = `http://${user.username}:${user.password}@${host}:${httpPort}`;
+    httpUserValue.textContent = user.username;
+    httpPassValue.textContent = user.password;
+    httpUrlValue.textContent = url;
+    currentHttpCredsText = `HTTP Proxy\nHost: ${host}\nPort: ${httpPort}\nUsername: ${user.username}\nPassword: ${user.password}\nURL: ${url}`;
+    openHttpCredsModal();
+  });
+}
+
 function updateUserRowInPlace(tr, user) {
   if (!tr || !user) return;
   const setCell = (label, html) => {
     const td = tr.querySelector(`td[data-label="${label}"]`);
     if (td) td.innerHTML = html;
   };
-  setCell("HTTP", user.allow_http ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>');
-  setCell(
-    "SOCKS5",
-    user.allow_socks5 ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'
-  );
-  setCell(
-    "MTProto",
-    user.allow_mtproto
-      ? user.mtproto_ad_enabled
-        ? '<span class="cell-yes" title="Реклама вкл.">MTProto+</span>'
-        : '<span class="cell-yes">Да</span>'
-      : '<span class="cell-no">—</span>'
-  );
-  setCell("Входящий", formatBytes(user.traffic_in_bytes));
-  setCell("Исходящий", formatBytes(user.traffic_out_bytes));
-  setCell("Всего", formatTotalTrafficCell(user));
-  setCell("Запросов", String(user.requests_count));
-  setCell("Онлайн", onlineStatusPill(user));
-  setCell("Был онлайн", formatLastOnlineCell(user));
-  setCell("До", formatExpiresCell(user));
-  setCell("Лимит", formatLimitCell(user));
-  setCell("Статус", accessStatusPill(user));
+  setCell("Пр.", formatProtoCell(user));
+  setCell("↓", formatBytes(user.traffic_in_bytes));
+  setCell("↑", formatBytes(user.traffic_out_bytes));
+  setCell("Σ", formatTotalTrafficCellCompact(user));
+  setCell("#req", String(user.requests_count));
+  setCell("Статус", formatUserStatusCell(user));
+  setCell("Срок", formatLimitsCompactCell(user));
 }
 
 function openHttpCredsModal() {
@@ -240,16 +455,19 @@ function closeArchiveMenu() {
 
 function showUsersTab() {
   usersSection.classList.remove("hidden");
-  if (trafficSummarySection) trafficSummarySection.classList.remove("hidden");
+  if (trafficSummarySection) trafficSummarySection.classList.add("hidden");
   usersTableSection.classList.remove("hidden");
   vlessSection.classList.add("hidden");
   analyticsSection.classList.add("hidden");
+  connectionsSection.classList.add("hidden");
   usersTabBtn.classList.add("tab-active");
   usersTabBtn.setAttribute("aria-selected", "true");
   vlessTabBtn.classList.remove("tab-active");
   vlessTabBtn.setAttribute("aria-selected", "false");
   analyticsTabBtn.classList.remove("tab-active");
   analyticsTabBtn.setAttribute("aria-selected", "false");
+  connectionsTabBtn.classList.remove("tab-active");
+  connectionsTabBtn.setAttribute("aria-selected", "false");
 }
 
 function showVlessTab() {
@@ -258,26 +476,49 @@ function showVlessTab() {
   usersTableSection.classList.add("hidden");
   vlessSection.classList.remove("hidden");
   analyticsSection.classList.add("hidden");
+  connectionsSection.classList.add("hidden");
   usersTabBtn.classList.remove("tab-active");
   usersTabBtn.setAttribute("aria-selected", "false");
   vlessTabBtn.classList.add("tab-active");
   vlessTabBtn.setAttribute("aria-selected", "true");
   analyticsTabBtn.classList.remove("tab-active");
   analyticsTabBtn.setAttribute("aria-selected", "false");
+  connectionsTabBtn.classList.remove("tab-active");
+  connectionsTabBtn.setAttribute("aria-selected", "false");
 }
 
 function showAnalyticsTab() {
   usersSection.classList.add("hidden");
-  if (trafficSummarySection) trafficSummarySection.classList.add("hidden");
+  if (trafficSummarySection) trafficSummarySection.classList.remove("hidden");
   usersTableSection.classList.add("hidden");
   vlessSection.classList.add("hidden");
   analyticsSection.classList.remove("hidden");
+  connectionsSection.classList.add("hidden");
   analyticsTabBtn.classList.add("tab-active");
   analyticsTabBtn.setAttribute("aria-selected", "true");
   usersTabBtn.classList.remove("tab-active");
   usersTabBtn.setAttribute("aria-selected", "false");
   vlessTabBtn.classList.remove("tab-active");
   vlessTabBtn.setAttribute("aria-selected", "false");
+  connectionsTabBtn.classList.remove("tab-active");
+  connectionsTabBtn.setAttribute("aria-selected", "false");
+}
+
+function showConnectionsTab() {
+  usersSection.classList.add("hidden");
+  if (trafficSummarySection) trafficSummarySection.classList.add("hidden");
+  usersTableSection.classList.add("hidden");
+  vlessSection.classList.add("hidden");
+  analyticsSection.classList.add("hidden");
+  connectionsSection.classList.remove("hidden");
+  connectionsTabBtn.classList.add("tab-active");
+  connectionsTabBtn.setAttribute("aria-selected", "true");
+  usersTabBtn.classList.remove("tab-active");
+  usersTabBtn.setAttribute("aria-selected", "false");
+  vlessTabBtn.classList.remove("tab-active");
+  vlessTabBtn.setAttribute("aria-selected", "false");
+  analyticsTabBtn.classList.remove("tab-active");
+  analyticsTabBtn.setAttribute("aria-selected", "false");
 }
 
 function formatBytes(bytes) {
@@ -537,114 +778,19 @@ async function api(path, options = {}) {
 function userRow(user) {
   const tr = document.createElement("tr");
   tr.dataset.userId = String(user.id);
-  const tgLink = `tg://socks?server=${encodeURIComponent(panelMeta.proxy_public_host)}&port=${encodeURIComponent(String(panelMeta.proxy_public_socks_port))}&user=${encodeURIComponent(user.username)}&pass=${encodeURIComponent(user.password || "")}`;
-  const mtprotoLink = `tg://proxy?server=${encodeURIComponent(panelMeta.proxy_public_mtproto_host || panelMeta.proxy_public_host)}&port=${encodeURIComponent(String(panelMeta.proxy_public_mtproto_port || 14443))}&secret=${encodeURIComponent(user.mtproto_secret || "")}`;
-  const accessOk = user.access_allowed !== false;
   tr.innerHTML = `
-    <td class="cell-num" data-label="ID">${user.id}</td>
-    <td data-label="Username"><strong>${user.username}</strong></td>
-    <td data-label="HTTP">${user.allow_http ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'}</td>
-    <td data-label="SOCKS5">${user.allow_socks5 ? '<span class="cell-yes">Да</span>' : '<span class="cell-no">—</span>'}</td>
-    <td data-label="MTProto">${user.allow_mtproto ? (user.mtproto_ad_enabled ? '<span class="cell-yes" title="Реклама вкл.">MTProto+</span>' : '<span class="cell-yes">Да</span>') : '<span class="cell-no">—</span>'}</td>
-    <td class="cell-num" data-label="Входящий">${formatBytes(user.traffic_in_bytes)}</td>
-    <td class="cell-num" data-label="Исходящий">${formatBytes(user.traffic_out_bytes)}</td>
-    <td class="cell-num cell-total-traffic" data-label="Всего">${formatTotalTrafficCell(user)}</td>
-    <td class="cell-num" data-label="Запросов">${user.requests_count}</td>
-    <td data-label="Онлайн">${onlineStatusPill(user)}</td>
-    <td data-label="Был онлайн">${formatLastOnlineCell(user)}</td>
-    <td data-label="До">${formatExpiresCell(user)}</td>
-    <td data-label="Лимит">${formatLimitCell(user)}</td>
-    <td data-label="Статус">${accessStatusPill(user)}</td>
-    <td data-label="Действия">
-      <div class="row-actions">
-        <button class="btn btn-compact" data-action="toggle-http">${user.allow_http ? "HTTP off" : "HTTP on"}</button>
-        <button class="btn btn-compact" data-action="toggle-socks">${user.allow_socks5 ? "SOCKS off" : "SOCKS on"}</button>
-        <button class="btn btn-compact" data-action="toggle-mtproto">${user.allow_mtproto ? "MTProto off" : "MTProto on"}</button>
-        <button class="btn btn-compact" data-action="limits">Срок / лимит</button>
-        <button class="btn btn-compact" data-action="edit-mtproto">MTProto…</button>
-        <button class="btn btn-compact" data-action="http-creds">HTTP</button>
-        <button class="btn btn-copy btn-compact" data-action="copy-socks">TG SOCKS5</button>
-        <button class="btn btn-copy btn-compact" data-action="copy-mtproto">TG MTProto</button>
-        <button class="btn btn-danger btn-compact" data-action="delete">Удалить</button>
-      </div>
-    </td>
+    <td class="cell-num col-id" data-label="ID">${user.id}</td>
+    <td class="col-user" data-label="User"><strong>${user.username}</strong></td>
+    <td class="col-protos" data-label="Пр.">${formatProtoCell(user)}</td>
+    <td class="cell-num col-traffic" data-label="↓">${formatBytes(user.traffic_in_bytes)}</td>
+    <td class="cell-num col-traffic" data-label="↑">${formatBytes(user.traffic_out_bytes)}</td>
+    <td class="cell-num col-traffic" data-label="Σ">${formatTotalTrafficCellCompact(user)}</td>
+    <td class="cell-num col-req" data-label="#req">${user.requests_count}</td>
+    <td class="col-status" data-label="Статус">${formatUserStatusCell(user)}</td>
+    <td class="col-limits" data-label="Срок">${formatLimitsCompactCell(user)}</td>
+    <td class="col-actions" data-label="Действия">${userRowActionsMenuHtml(user)}</td>
   `;
-
-  tr.querySelector('[data-action="toggle-http"]').addEventListener("click", async () => {
-    await updateUser(user.id, { allow_http: !user.allow_http });
-  });
-  tr.querySelector('[data-action="toggle-socks"]').addEventListener("click", async () => {
-    await updateUser(user.id, { allow_socks5: !user.allow_socks5 });
-  });
-  tr.querySelector('[data-action="toggle-mtproto"]').addEventListener("click", async () => {
-    await updateUser(user.id, { allow_mtproto: !user.allow_mtproto });
-  });
-  tr.querySelector('[data-action="limits"]').addEventListener("click", () => {
-    openLimitsModal(user);
-  });
-  tr.querySelector('[data-action="edit-mtproto"]').addEventListener("click", () => {
-    openMtprotoModal(user);
-  });
-  tr.querySelector('[data-action="delete"]').addEventListener("click", async () => {
-    if (!confirm(`Удалить пользователя ${user.username}?`)) return;
-    try {
-      await api(`/api/users/${user.id}`, { method: "DELETE" });
-      setStatus(`Пользователь ${user.username} удален`);
-      await loadUsers({ forceFullRender: true });
-    } catch (e) {
-      setStatus(e.message, true);
-    }
-  });
-  tr.querySelector('[data-action="copy-socks"]').addEventListener("click", async () => {
-    if (!accessOk) {
-      setStatus("Доступ заблокирован (срок или лимит трафика)", true);
-      return;
-    }
-    if (!user.allow_socks5) {
-      setStatus("У пользователя выключен SOCKS5", true);
-      return;
-    }
-    const copied = await copyToClipboard(tgLink);
-    if (copied) {
-      setStatus(`SOCKS5 ссылка скопирована для ${user.username}`);
-    } else {
-      setStatus(`Скопируйте вручную: ${tgLink}`, true);
-    }
-  });
-  tr.querySelector('[data-action="copy-mtproto"]').addEventListener("click", async () => {
-    if (!accessOk) {
-      setStatus("Доступ заблокирован (срок или лимит трафика)", true);
-      return;
-    }
-    if (!user.allow_mtproto || !user.mtproto_secret) {
-      setStatus("У пользователя выключен MTProto", true);
-      return;
-    }
-    const copied = await copyToClipboard(mtprotoLink);
-    if (copied) {
-      setStatus(`MTProto ссылка скопирована для ${user.username}`);
-    } else {
-      setStatus(`Скопируйте вручную: ${mtprotoLink}`, true);
-    }
-  });
-  tr.querySelector('[data-action="http-creds"]').addEventListener("click", () => {
-    if (!accessOk) {
-      setStatus("Доступ заблокирован (срок или лимит трафика)", true);
-      return;
-    }
-    if (!user.allow_http) {
-      setStatus("У пользователя выключен HTTP", true);
-      return;
-    }
-    const host = panelMeta.proxy_public_host;
-    const httpPort = panelMeta.proxy_public_http_port || 13128;
-    const url = `http://${user.username}:${user.password}@${host}:${httpPort}`;
-    httpUserValue.textContent = user.username;
-    httpPassValue.textContent = user.password;
-    httpUrlValue.textContent = url;
-    currentHttpCredsText = `HTTP Proxy\nHost: ${host}\nPort: ${httpPort}\nUsername: ${user.username}\nPassword: ${user.password}\nURL: ${url}`;
-    openHttpCredsModal();
-  });
+  bindUserRowActions(tr, user);
   return tr;
 }
 
@@ -691,6 +837,164 @@ async function loadTrafficSummary({ silent = false } = {}) {
   }
 }
 
+function updateConnectionsSortHeaders() {
+  const headers = document.querySelectorAll("#connectionsSection th.sortable[data-sort]");
+  headers.forEach((th) => {
+    const field = th.dataset.sort;
+    const indicator = th.querySelector(".sort-indicator");
+    const active = field === connectionsSortBy;
+    th.classList.toggle("sort-active", active);
+    th.setAttribute("aria-sort", active ? (connectionsSortDir === "asc" ? "ascending" : "descending") : "none");
+    if (indicator) {
+      indicator.textContent = active ? (connectionsSortDir === "asc" ? "↑" : "↓") : "⇅";
+    }
+  });
+}
+
+function initConnectionsTableSort() {
+  const headers = document.querySelectorAll("#connectionsSection th.sortable[data-sort]");
+  headers.forEach((th) => {
+    th.addEventListener("click", () => {
+      const field = th.dataset.sort;
+      if (!field) return;
+      if (connectionsSortBy === field) {
+        connectionsSortDir = connectionsSortDir === "asc" ? "desc" : "asc";
+      } else {
+        connectionsSortBy = field;
+        connectionsSortDir = field === "username" || field === "id" ? "asc" : "desc";
+      }
+      connectionsListPage = 1;
+      updateConnectionsSortHeaders();
+      loadConnections({ forceFullRender: true });
+    });
+  });
+  updateConnectionsSortHeaders();
+}
+
+function updateConnectionsPaginationUi(total, totalPages) {
+  if (!connectionsPagination) return;
+  if (total <= CONNECTIONS_PAGE_SIZE) {
+    connectionsPagination.classList.add("hidden");
+    return;
+  }
+  connectionsPagination.classList.remove("hidden");
+  if (connectionsPageInfo) {
+    connectionsPageInfo.textContent = `Страница ${connectionsListPage} из ${totalPages} · всего ${total}`;
+  }
+  if (connectionsPagePrev) connectionsPagePrev.disabled = connectionsListPage <= 1;
+  if (connectionsPageNext) connectionsPageNext.disabled = connectionsListPage >= totalPages;
+}
+
+function renderConnectionsSummary(totals) {
+  if (!totals) return;
+  const fmt = (tcp, ips) => `${totals[tcp] || 0} TCP · ${totals[ips] || 0} IP`;
+  if (connectionsTotalHttp) {
+    connectionsTotalHttp.textContent = fmt("connections_http", "connections_http_ips");
+  }
+  if (connectionsTotalSocks) {
+    connectionsTotalSocks.textContent = fmt("connections_socks5", "connections_socks5_ips");
+  }
+  if (connectionsTotalMtproto) {
+    connectionsTotalMtproto.textContent = fmt("connections_mtproto", "connections_mtproto_ips");
+  }
+  if (connectionsTotalAll) {
+    connectionsTotalAll.textContent = fmt("connections_total", "connections_total_ips");
+  }
+  if (connectionsUsersBadge) {
+    connectionsUsersBadge.textContent = `Пользователей с сессиями: ${totals.users_with_connections || 0}`;
+  }
+}
+
+function connectionRow(user) {
+  const tr = document.createElement("tr");
+  tr.dataset.userId = String(user.id);
+  tr.innerHTML = `
+    <td class="cell-num" data-label="ID">${user.id}</td>
+    <td data-label="Username"><strong>${user.username}</strong></td>
+    <td class="cell-num cell-conn" data-label="HTTP">${formatProtocolConnectionsCell(user.connections_http, user.connections_http_ips, user.allow_http)}</td>
+    <td class="cell-num cell-conn" data-label="SOCKS5">${formatProtocolConnectionsCell(user.connections_socks5, user.connections_socks5_ips, user.allow_socks5)}</td>
+    <td class="cell-num cell-conn" data-label="MTProto">${formatProtocolConnectionsCell(user.connections_mtproto, user.connections_mtproto_ips, user.allow_mtproto)}</td>
+    <td class="cell-num cell-conn" data-label="Всего">${formatProtocolConnectionsCell(user.connections_total, user.connections_total_ips, true)}</td>
+    <td data-label="Онлайн">${onlineStatusPill(user)}</td>
+  `;
+  return tr;
+}
+
+function updateConnectionRowInPlace(tr, user) {
+  if (!tr || !user) return;
+  const setCell = (label, html) => {
+    const td = tr.querySelector(`td[data-label="${label}"]`);
+    if (td) td.innerHTML = html;
+  };
+  setCell("HTTP", formatProtocolConnectionsCell(user.connections_http, user.connections_http_ips, user.allow_http));
+  setCell("SOCKS5", formatProtocolConnectionsCell(user.connections_socks5, user.connections_socks5_ips, user.allow_socks5));
+  setCell("MTProto", formatProtocolConnectionsCell(user.connections_mtproto, user.connections_mtproto_ips, user.allow_mtproto));
+  setCell("Всего", formatProtocolConnectionsCell(user.connections_total, user.connections_total_ips, true));
+  setCell("Онлайн", onlineStatusPill(user));
+}
+
+function renderConnectionsTable({ forceFullRender = false } = {}) {
+  if (!connectionsTableBody) return;
+  const total = connectionsTableTotal;
+  if (!total) {
+    connectionsTableBody.innerHTML = "";
+    const tr = document.createElement("tr");
+    const q = String(connectionsSearchInput?.value || "").trim();
+    tr.innerHTML = `<td colspan="7" class="empty-users">${q ? "Ничего не найдено" : "Пользователей пока нет"}</td>`;
+    connectionsTableBody.appendChild(tr);
+    if (connectionsPagination) connectionsPagination.classList.add("hidden");
+    return;
+  }
+  const totalPages = Math.max(1, Math.ceil(total / CONNECTIONS_PAGE_SIZE));
+  const existingRows = connectionsTableBody.querySelectorAll("tr[data-user-id]");
+  const canPatch =
+    !forceFullRender &&
+    existingRows.length === connectionsCache.length &&
+    existingRows.every((row, index) => row.dataset.userId === String(connectionsCache[index]?.id));
+  if (canPatch) {
+    existingRows.forEach((row, index) => updateConnectionRowInPlace(row, connectionsCache[index]));
+  } else {
+    connectionsTableBody.innerHTML = "";
+    connectionsCache.forEach((u) => connectionsTableBody.appendChild(connectionRow(u)));
+  }
+  updateConnectionsPaginationUi(total, totalPages);
+}
+
+async function loadConnections({ forceFullRender = false, silent = false } = {}) {
+  if (connectionsRefreshInFlight) return;
+  connectionsRefreshInFlight = true;
+  try {
+    const q = String(connectionsSearchInput?.value || "").trim();
+    for (let guard = 0; guard < 5; guard += 1) {
+      const qs = new URLSearchParams({
+        page: String(connectionsListPage),
+        per_page: String(CONNECTIONS_PAGE_SIZE),
+        sort_by: connectionsSortBy,
+        sort_dir: connectionsSortDir,
+      });
+      if (q) qs.set("q", q);
+      const pageData = await api(`/api/connections?${qs.toString()}`);
+      const total = Number(pageData.total) || 0;
+      const perPage = Number(pageData.per_page) || CONNECTIONS_PAGE_SIZE;
+      const totalPages = total === 0 ? 1 : Math.max(1, Math.ceil(total / perPage));
+      if (connectionsListPage > totalPages) {
+        connectionsListPage = totalPages;
+        continue;
+      }
+      connectionsListPage = Number(pageData.page) || connectionsListPage;
+      connectionsTableTotal = total;
+      connectionsCache = Array.isArray(pageData.items) ? pageData.items : [];
+      renderConnectionsSummary(pageData.totals);
+      renderConnectionsTable({ forceFullRender });
+      break;
+    }
+  } catch (e) {
+    if (!silent) setStatus(`Ошибка загрузки подключений: ${e.message}`, true);
+  } finally {
+    connectionsRefreshInFlight = false;
+  }
+}
+
 async function loadUsers({ forceFullRender = false, silent = false } = {}) {
   if (usersRefreshInFlight) return;
   usersRefreshInFlight = true;
@@ -708,7 +1012,6 @@ async function loadUsers({ forceFullRender = false, silent = false } = {}) {
       if (!silent) {
         requests.push(api("/api/users/chart-options"));
       }
-      requests.push(loadTrafficSummary({ silent: true }));
       const results = await Promise.all(requests);
       const pageData = results[0];
       const chartUsers = !silent ? results[1] : null;
@@ -741,22 +1044,50 @@ async function loadUsers({ forceFullRender = false, silent = false } = {}) {
 
 async function refreshLiveData() {
   if (appContainer.classList.contains("hidden") || document.hidden) return;
-  await loadUsers({ silent: true });
-  if (!analyticsSection.classList.contains("hidden")) {
+  const onUsersTab = !usersSection.classList.contains("hidden");
+  const onConnectionsTab = connectionsSection && !connectionsSection.classList.contains("hidden");
+  if (onUsersTab) {
+    await loadUsers({ silent: true });
+  }
+  if (onConnectionsTab) {
+    await loadConnections({ silent: true });
+  }
+  const onAnalyticsTab =
+    analyticsSection &&
+    !analyticsSection.classList.contains("hidden") &&
+    trafficSummarySection &&
+    !trafficSummarySection.classList.contains("hidden");
+  if (onAnalyticsTab) {
+    await loadTrafficSummary({ silent: true });
     await loadTrafficChart({ silent: true });
   }
+}
+
+function setConnectionsLiveBadgePaused(paused) {
+  if (!connectionsLiveBadge) return;
+  connectionsLiveBadge.classList.toggle("paused", paused);
+  connectionsLiveBadge.title = paused
+    ? "Автообновление приостановлено (вкладка неактивна)"
+    : "Данные обновляются автоматически каждые 3 секунды";
 }
 
 function startLiveRefresh() {
   stopLiveRefresh();
   setLiveBadgePaused(false);
+  setConnectionsLiveBadgePaused(false);
   void refreshLiveData();
   liveRefreshTimer = setInterval(() => {
     void refreshLiveData();
   }, LIVE_REFRESH_INTERVAL_MS);
   chartRefreshTimer = setInterval(() => {
     if (appContainer.classList.contains("hidden") || document.hidden) return;
-    if (!analyticsSection.classList.contains("hidden")) {
+    if (
+      analyticsSection &&
+      !analyticsSection.classList.contains("hidden") &&
+      trafficSummarySection &&
+      !trafficSummarySection.classList.contains("hidden")
+    ) {
+      void loadTrafficSummary({ silent: true });
       void loadTrafficChart({ silent: true });
     }
   }, CHART_REFRESH_INTERVAL_MS);
@@ -1247,9 +1578,17 @@ vlessTabBtn.addEventListener("click", async () => {
 analyticsTabBtn.addEventListener("click", async () => {
   showAnalyticsTab();
   try {
-    await loadTrafficChart();
+    await Promise.all([loadTrafficSummary(), loadTrafficChart()]);
   } catch (e) {
-    setStatus(`Ошибка графика: ${e.message}`, true);
+    setStatus(`Ошибка загрузки трафика: ${e.message}`, true);
+  }
+});
+connectionsTabBtn.addEventListener("click", async () => {
+  showConnectionsTab();
+  try {
+    await loadConnections({ forceFullRender: true });
+  } catch (e) {
+    setStatus(`Ошибка загрузки подключений: ${e.message}`, true);
   }
 });
 chartRefreshBtn.addEventListener("click", async () => {
@@ -1314,7 +1653,37 @@ if (usersPageNext) {
   });
 }
 
+if (connectionsSearchInput) {
+  connectionsSearchInput.addEventListener("input", () => {
+    connectionsListPage = 1;
+    if (connectionsSearchDebounce) clearTimeout(connectionsSearchDebounce);
+    connectionsSearchDebounce = setTimeout(() => {
+      connectionsSearchDebounce = null;
+      loadConnections({ forceFullRender: true });
+    }, 300);
+  });
+}
+if (connectionsPagePrev) {
+  connectionsPagePrev.addEventListener("click", () => {
+    if (connectionsListPage > 1) {
+      connectionsListPage -= 1;
+      loadConnections({ forceFullRender: true });
+    }
+  });
+}
+if (connectionsPageNext) {
+  connectionsPageNext.addEventListener("click", () => {
+    const totalPages =
+      connectionsTableTotal === 0 ? 1 : Math.max(1, Math.ceil(connectionsTableTotal / CONNECTIONS_PAGE_SIZE));
+    if (connectionsListPage < totalPages) {
+      connectionsListPage += 1;
+      loadConnections({ forceFullRender: true });
+    }
+  });
+}
+
 initUsersTableSort();
+initConnectionsTableSort();
 
 if (vlessForm) {
   vlessForm.addEventListener("submit", async (e) => {
@@ -1380,9 +1749,11 @@ async function bootstrap() {
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     setLiveBadgePaused(true);
+    setConnectionsLiveBadgePaused(true);
     return;
   }
   setLiveBadgePaused(false);
+  setConnectionsLiveBadgePaused(false);
   void refreshLiveData();
 });
 
@@ -1518,5 +1889,8 @@ httpCredsModal.addEventListener("click", (event) => {
 document.addEventListener("click", (event) => {
   if (!archiveMenu.contains(event.target) && event.target !== archiveMenuBtn) {
     closeArchiveMenu();
+  }
+  if (!event.target.closest(".row-actions-menu")) {
+    closeAllRowMenus();
   }
 });

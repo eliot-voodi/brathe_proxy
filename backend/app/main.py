@@ -75,6 +75,7 @@ TRAFFIC_SAMPLES_PRUNE_CHUNK = int(os.environ.get("TRAFFIC_SAMPLES_PRUNE_CHUNK", 
 TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES = int(os.environ.get("TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES", "50"))
 ONLINE_LOOKBACK_SECONDS = int(os.environ.get("ONLINE_LOOKBACK_SECONDS", "300"))
 ONLINE_MIN_SPAN_SECONDS = int(os.environ.get("ONLINE_MIN_SPAN_SECONDS", "60"))
+CONNECTION_SESSION_TTL_SECONDS = int(os.environ.get("CONNECTION_SESSION_TTL_SECONDS", "120"))
 SESSION_COOKIE_NAME = "panel_session"
 SESSION_TTL_SECONDS = 12 * 60 * 60
 MAX_IMPORT_ROWS = 500
@@ -119,6 +120,12 @@ class ProxyUser(Base):
     traffic_out_bytes: Mapped[int] = mapped_column(Integer, default=0)
     traffic_bytes: Mapped[int] = mapped_column(Integer, default=0)
     requests_count: Mapped[int] = mapped_column(Integer, default=0)
+    connections_http: Mapped[int] = mapped_column(Integer, default=0)
+    connections_http_ips: Mapped[int] = mapped_column(Integer, default=0)
+    connections_socks5: Mapped[int] = mapped_column(Integer, default=0)
+    connections_socks5_ips: Mapped[int] = mapped_column(Integer, default=0)
+    connections_mtproto: Mapped[int] = mapped_column(Integer, default=0)
+    connections_mtproto_ips: Mapped[int] = mapped_column(Integer, default=0)
     first_connection_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_online_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     online_window_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -174,6 +181,17 @@ class TrafficEvent(Base):
     bytes_in: Mapped[int] = mapped_column(Integer, default=0)
     bytes_out: Mapped[int] = mapped_column(Integer, default=0)
     logged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class ProxyActiveSession(Base):
+    """Активная HTTP/SOCKS-сессия 3proxy (client_ip:client_port), обновляется из лога."""
+    __tablename__ = "proxy_active_sessions"
+
+    username: Mapped[str] = mapped_column(String(64), primary_key=True)
+    protocol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    session_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    client_ip: Mapped[str] = mapped_column(String(64), default="")
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -310,6 +328,14 @@ class UserOut(BaseModel):
     traffic_out_bytes: int
     traffic_bytes: int
     requests_count: int
+    connections_http: int = 0
+    connections_http_ips: int = 0
+    connections_socks5: int = 0
+    connections_socks5_ips: int = 0
+    connections_mtproto: int = 0
+    connections_mtproto_ips: int = 0
+    connections_total: int = 0
+    connections_total_ips: int = 0
     first_connection_at: datetime | None = None
     last_online_at: datetime | None = None
     created_at: datetime
@@ -376,6 +402,43 @@ class TrafficSummaryOut(BaseModel):
     month_start: datetime
     month_end: datetime
     first_connection_at: datetime | None = None
+
+
+class ConnectionTotalsOut(BaseModel):
+    connections_http: int
+    connections_http_ips: int = 0
+    connections_socks5: int
+    connections_socks5_ips: int = 0
+    connections_mtproto: int
+    connections_mtproto_ips: int = 0
+    connections_total: int
+    connections_total_ips: int = 0
+    users_with_connections: int
+
+
+class ConnectionUserOut(BaseModel):
+    id: int
+    username: str
+    allow_http: bool
+    allow_socks5: bool
+    allow_mtproto: bool
+    connections_http: int
+    connections_http_ips: int = 0
+    connections_socks5: int
+    connections_socks5_ips: int = 0
+    connections_mtproto: int
+    connections_mtproto_ips: int = 0
+    connections_total: int
+    connections_total_ips: int = 0
+    is_online: bool
+
+
+class ConnectionsPageOut(BaseModel):
+    totals: ConnectionTotalsOut
+    items: list[ConnectionUserOut]
+    total: int
+    page: int
+    per_page: int
 
 
 _MONTHS_GENITIVE_RU = (
@@ -591,6 +654,21 @@ def init_db() -> None:
                     """
                 )
             )
+        if "connections_http" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN connections_http INTEGER DEFAULT 0"))
+        if "connections_http_ips" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN connections_http_ips INTEGER DEFAULT 0"))
+        if "connections_socks5" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN connections_socks5 INTEGER DEFAULT 0"))
+        if "connections_socks5_ips" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN connections_socks5_ips INTEGER DEFAULT 0"))
+        if "connections_mtproto" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN connections_mtproto INTEGER DEFAULT 0"))
+        if "connections_mtproto_ips" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN connections_mtproto_ips INTEGER DEFAULT 0"))
+        session_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(proxy_active_sessions)")).fetchall()]
+        if session_columns and "client_ip" not in session_columns:
+            conn.execute(text("ALTER TABLE proxy_active_sessions ADD COLUMN client_ip TEXT DEFAULT ''"))
         panel_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(panel_settings)")).fetchall()]
         if panel_columns and "vless_singbox_restart_pending" not in panel_columns:
             conn.execute(
@@ -1022,11 +1100,27 @@ USER_LIST_SORT_FIELDS = frozenset(
         "traffic_out_bytes",
         "traffic_bytes",
         "requests_count",
+        "connections_http",
+        "connections_socks5",
+        "connections_mtproto",
+        "connections_total",
         "is_online",
         "last_online_at",
         "expires_at",
         "traffic_limit_bytes",
         "access_allowed",
+    }
+)
+
+CONNECTION_LIST_SORT_FIELDS = frozenset(
+    {
+        "id",
+        "username",
+        "connections_http",
+        "connections_socks5",
+        "connections_mtproto",
+        "connections_total",
+        "is_online",
     }
 )
 
@@ -1095,6 +1189,12 @@ def users_list_order_clauses(sort_by: str, sort_dir: str, *, now: datetime | Non
         "traffic_out_bytes": ProxyUser.traffic_out_bytes,
         "traffic_bytes": ProxyUser.traffic_bytes,
         "requests_count": ProxyUser.requests_count,
+        "connections_http": ProxyUser.connections_http,
+        "connections_socks5": ProxyUser.connections_socks5,
+        "connections_mtproto": ProxyUser.connections_mtproto,
+        "connections_total": (
+            ProxyUser.connections_http + ProxyUser.connections_socks5 + ProxyUser.connections_mtproto
+        ),
         "is_online": user_online_sort_expr(now),
         "last_online_at": ProxyUser.last_online_at,
         "expires_at": ProxyUser.expires_at,
@@ -1107,6 +1207,90 @@ def users_list_order_clauses(sort_by: str, sort_dir: str, *, now: datetime | Non
     if field != "id":
         clauses.append(ProxyUser.id.asc())
     return clauses
+
+
+def connections_list_order_clauses(sort_by: str, sort_dir: str, *, now: datetime | None = None):
+    field = sort_by if sort_by in CONNECTION_LIST_SORT_FIELDS else "connections_total"
+    descending = sort_dir.lower() == "desc"
+    columns = {
+        "id": ProxyUser.id,
+        "username": ProxyUser.username,
+        "connections_http": ProxyUser.connections_http,
+        "connections_socks5": ProxyUser.connections_socks5,
+        "connections_mtproto": ProxyUser.connections_mtproto,
+        "connections_total": (
+            ProxyUser.connections_http + ProxyUser.connections_socks5 + ProxyUser.connections_mtproto
+        ),
+        "is_online": user_online_sort_expr(now),
+    }
+    column = columns[field]
+    primary = column.desc() if descending else column.asc()
+    clauses = [primary]
+    if field != "id":
+        clauses.append(ProxyUser.id.asc())
+    return clauses
+
+
+def aggregate_connection_totals(db: Session) -> ConnectionTotalsOut:
+    row = db.execute(
+        select(
+            func.coalesce(func.sum(ProxyUser.connections_http), 0),
+            func.coalesce(func.sum(ProxyUser.connections_http_ips), 0),
+            func.coalesce(func.sum(ProxyUser.connections_socks5), 0),
+            func.coalesce(func.sum(ProxyUser.connections_socks5_ips), 0),
+            func.coalesce(func.sum(ProxyUser.connections_mtproto), 0),
+            func.coalesce(func.sum(ProxyUser.connections_mtproto_ips), 0),
+        )
+    ).one()
+    http_total = int(row[0])
+    http_ips = int(row[1])
+    socks_total = int(row[2])
+    socks_ips = int(row[3])
+    mtproto_total = int(row[4])
+    mtproto_ips = int(row[5])
+    all_total = http_total + socks_total + mtproto_total
+    all_ips = http_ips + socks_ips + mtproto_ips
+    users_with_connections = int(
+        db.scalar(
+            select(func.count()).select_from(ProxyUser).where(
+                (ProxyUser.connections_http + ProxyUser.connections_socks5 + ProxyUser.connections_mtproto) > 0
+            )
+        )
+        or 0
+    )
+    return ConnectionTotalsOut(
+        connections_http=http_total,
+        connections_http_ips=http_ips,
+        connections_socks5=socks_total,
+        connections_socks5_ips=socks_ips,
+        connections_mtproto=mtproto_total,
+        connections_mtproto_ips=mtproto_ips,
+        connections_total=all_total,
+        connections_total_ips=all_ips,
+        users_with_connections=users_with_connections,
+    )
+
+
+def connection_user_to_out(user: ProxyUser, *, now: datetime | None = None, is_online: bool | None = None) -> ConnectionUserOut:
+    now = now or datetime.now(timezone.utc)
+    online_value = user_is_online(user, now) if is_online is None else bool(is_online)
+    total_ips = user.connections_http_ips + user.connections_socks5_ips + user.connections_mtproto_ips
+    return ConnectionUserOut(
+        id=user.id,
+        username=user.username,
+        allow_http=user.allow_http,
+        allow_socks5=user.allow_socks5,
+        allow_mtproto=user.allow_mtproto,
+        connections_http=user.connections_http,
+        connections_http_ips=user.connections_http_ips,
+        connections_socks5=user.connections_socks5,
+        connections_socks5_ips=user.connections_socks5_ips,
+        connections_mtproto=user.connections_mtproto,
+        connections_mtproto_ips=user.connections_mtproto_ips,
+        connections_total=user.connections_http + user.connections_socks5 + user.connections_mtproto,
+        connections_total_ips=total_ips,
+        is_online=online_value,
+    )
 
 
 def user_to_out(
@@ -1133,6 +1317,14 @@ def user_to_out(
         traffic_out_bytes=user.traffic_out_bytes,
         traffic_bytes=user.traffic_bytes,
         requests_count=user.requests_count,
+        connections_http=user.connections_http,
+        connections_http_ips=user.connections_http_ips,
+        connections_socks5=user.connections_socks5,
+        connections_socks5_ips=user.connections_socks5_ips,
+        connections_mtproto=user.connections_mtproto,
+        connections_mtproto_ips=user.connections_mtproto_ips,
+        connections_total=user.connections_http + user.connections_socks5 + user.connections_mtproto,
+        connections_total_ips=user.connections_http_ips + user.connections_socks5_ips + user.connections_mtproto_ips,
         first_connection_at=user.first_connection_at,
         last_online_at=user.last_online_at,
         created_at=user.created_at,
@@ -1203,10 +1395,10 @@ allow {socks_acl}
 socks -p1080
 """
 
-    # Log format: epoch|username|bytes_in|bytes_out
+    # Log format: epoch|username|bytes_in|bytes_out|service|client_ip|client_port
     return f"""monitor /etc/3proxy/3proxy.cfg
 log /var/log/3proxy/traffic.log
-logformat "%T|%U|%I|%O"
+logformat "%T|%U|%I|%O|%N|%C|%c"
 # Emit intermediate records for long-lived connections,
 # so panel counters update before the connection is closed.
 logdump {PROXY_LOGDUMP_BYTES} {PROXY_LOGDUMP_BYTES}
@@ -1463,10 +1655,30 @@ def sync_proxy_config(session: Session) -> None:
     sync_mtproto_config(session, apply_upstream_chain=apply_chain)
 
 
+def _normalize_mtproto_user_stat(stat: dict) -> dict:
+    if "bytes_in" in stat or "bytes_out" in stat:
+        in_total = int(stat.get("bytes_in", 0))
+        out_total = int(stat.get("bytes_out", 0))
+    else:
+        total_octets = int(stat.get("total_octets", 0))
+        in_total = total_octets // 2
+        out_total = total_octets - in_total
+    return {
+        "bytes_in": in_total,
+        "bytes_out": out_total,
+        "connections": int(stat.get("current_connections", stat.get("connections", 0))),
+        "unique_ips": int(stat.get("active_unique_ips", 0)),
+    }
+
+
 def _mtproto_stats_rows(payload: dict) -> list[tuple[str, dict]]:
     users_payload = payload.get("users")
     if isinstance(users_payload, dict):
-        return [(name, stat) for name, stat in users_payload.items() if isinstance(stat, dict)]
+        return [
+            (name, _normalize_mtproto_user_stat(stat))
+            for name, stat in users_payload.items()
+            if isinstance(stat, dict)
+        ]
     if payload.get("ok") and isinstance(payload.get("data"), list):
         rows: list[tuple[str, dict]] = []
         for item in payload["data"]:
@@ -1475,18 +1687,7 @@ def _mtproto_stats_rows(payload: dict) -> list[tuple[str, dict]]:
             username = str(item.get("username") or "").strip()
             if not username:
                 continue
-            total_octets = int(item.get("total_octets", 0))
-            half = total_octets // 2
-            rows.append(
-                (
-                    username,
-                    {
-                        "bytes_in": half,
-                        "bytes_out": total_octets - half,
-                        "connections": int(item.get("current_connections", 0)),
-                    },
-                )
-            )
+            rows.append((username, _normalize_mtproto_user_stat(item)))
         return rows
     return []
 
@@ -1503,6 +1704,7 @@ def poll_mtproto_stats(session: Session) -> None:
     if not stat_rows:
         return
 
+    seen_usernames: set[str] = set()
     db_users = session.scalars(select(ProxyUser).where(ProxyUser.username.in_([r[0] for r in stat_rows]))).all()
     by_username = {u.username: u for u in db_users}
     for username, stat in stat_rows:
@@ -1511,9 +1713,13 @@ def poll_mtproto_stats(session: Session) -> None:
         user = by_username[username]
         if not user.allow_mtproto:
             continue
+        seen_usernames.add(username)
         in_total = int(stat.get("bytes_in", 0))
         out_total = int(stat.get("bytes_out", 0))
         connections_total = int(stat.get("connections", 0))
+        unique_ips_total = int(stat.get("unique_ips", 0))
+        user.connections_mtproto = connections_total
+        user.connections_mtproto_ips = unique_ips_total
 
         state = session.get(MTProtoUserState, username)
         if state is None:
@@ -1541,6 +1747,12 @@ def poll_mtproto_stats(session: Session) -> None:
         state.last_in_bytes = in_total
         state.last_out_bytes = out_total
         state.last_connections = connections_total
+
+    mtproto_users = session.scalars(select(ProxyUser).where(ProxyUser.allow_mtproto.is_(True))).all()
+    for user in mtproto_users:
+        if user.username not in seen_usernames:
+            user.connections_mtproto = 0
+            user.connections_mtproto_ips = 0
 
 
 def sample_traffic(session: Session, now: datetime) -> None:
@@ -1572,11 +1784,36 @@ def sample_traffic(session: Session, now: datetime) -> None:
     )
 
 
-def parse_traffic_line(line: str) -> tuple[str, int, int, datetime | None] | None:
-    parts = line.strip().split("|")
-    if len(parts) != 4:
+def service_name_to_protocol(service: str) -> str | None:
+    name = service.strip().lower()
+    if name in ("proxy", "http", "httpproxy"):
+        return "http"
+    if name in ("socks", "socks5"):
+        return "socks5"
+    return None
+
+
+def session_key_from_client(client_ip: str, client_port: str) -> str | None:
+    ip = client_ip.strip()
+    port = client_port.strip()
+    if not ip or ip == "-" or not port or port == "-":
         return None
-    ts_str, username, incoming, outgoing = parts
+    try:
+        port_num = int(port)
+    except ValueError:
+        return None
+    if port_num <= 0 or port_num > 65535:
+        return None
+    return f"{ip}:{port_num}"
+
+
+def parse_traffic_line(
+    line: str,
+) -> tuple[str, int, int, datetime | None, str | None, str | None, str | None] | None:
+    parts = line.strip().split("|")
+    if len(parts) not in (4, 7):
+        return None
+    ts_str, username, incoming, outgoing = parts[0], parts[1], parts[2], parts[3]
     if not username or username == "-":
         return None
     try:
@@ -1590,7 +1827,105 @@ def parse_traffic_line(line: str) -> tuple[str, int, int, datetime | None] | Non
         logged_at = datetime.fromtimestamp(ts_epoch, tz=timezone.utc)
     except (ValueError, OSError, OverflowError):
         logged_at = None
-    return username, in_bytes, out_bytes, logged_at
+    protocol: str | None = None
+    session_key: str | None = None
+    client_ip: str | None = None
+    if len(parts) == 7:
+        protocol = service_name_to_protocol(parts[4])
+        client_ip = parts[5].strip()
+        if not client_ip or client_ip == "-":
+            client_ip = None
+        session_key = session_key_from_client(parts[5], parts[6])
+    return username, in_bytes, out_bytes, logged_at, protocol, session_key, client_ip
+
+
+def upsert_proxy_sessions(
+    session: Session,
+    updates: list[tuple[str, str, str, str, datetime]],
+) -> None:
+    if not updates:
+        return
+    merged: dict[tuple[str, str, str], tuple[str, datetime]] = {}
+    for username, protocol, session_key, client_ip, last_seen in updates:
+        key = (username, protocol, session_key)
+        prev = merged.get(key)
+        if prev is None or last_seen > prev[1]:
+            merged[key] = (client_ip, last_seen)
+    for (username, protocol, session_key), (client_ip, last_seen) in merged.items():
+        row = session.get(ProxyActiveSession, (username, protocol, session_key))
+        if row is None:
+            session.add(
+                ProxyActiveSession(
+                    username=username,
+                    protocol=protocol,
+                    session_key=session_key,
+                    client_ip=client_ip,
+                    last_seen_at=last_seen,
+                )
+            )
+        else:
+            if client_ip:
+                row.client_ip = client_ip
+            if last_seen > row.last_seen_at:
+                row.last_seen_at = last_seen
+
+
+def refresh_proxy_connection_counts(session: Session, now: datetime) -> None:
+    cutoff = now - timedelta(seconds=max(1, CONNECTION_SESSION_TTL_SECONDS))
+    session.execute(delete(ProxyActiveSession).where(ProxyActiveSession.last_seen_at < cutoff))
+
+    count_rows = session.execute(
+        select(
+            ProxyActiveSession.username,
+            ProxyActiveSession.protocol,
+            func.count(),
+        ).group_by(ProxyActiveSession.username, ProxyActiveSession.protocol)
+    ).all()
+    ip_rows = session.execute(
+        select(
+            ProxyActiveSession.username,
+            ProxyActiveSession.protocol,
+            func.count(func.distinct(ProxyActiveSession.client_ip)),
+        )
+        .where(ProxyActiveSession.client_ip != "")
+        .group_by(ProxyActiveSession.username, ProxyActiveSession.protocol)
+    ).all()
+
+    counts_by_user: dict[str, dict[str, int]] = {}
+    ips_by_user: dict[str, dict[str, int]] = {}
+    for username, protocol, count in count_rows:
+        counts_by_user.setdefault(username, {"http": 0, "socks5": 0})[protocol] = int(count)
+    for username, protocol, ip_count in ip_rows:
+        ips_by_user.setdefault(username, {"http": 0, "socks5": 0})[protocol] = int(ip_count)
+
+    stale_users = session.scalars(
+        select(ProxyUser).where(
+            or_(
+                ProxyUser.connections_http > 0,
+                ProxyUser.connections_http_ips > 0,
+                ProxyUser.connections_socks5 > 0,
+                ProxyUser.connections_socks5_ips > 0,
+            )
+        )
+    ).all()
+    active_usernames = set(counts_by_user.keys()) | set(ips_by_user.keys())
+    for user in stale_users:
+        if user.username not in active_usernames:
+            user.connections_http = 0
+            user.connections_http_ips = 0
+            user.connections_socks5 = 0
+            user.connections_socks5_ips = 0
+
+    if not active_usernames:
+        return
+    users = session.scalars(select(ProxyUser).where(ProxyUser.username.in_(list(active_usernames)))).all()
+    for user in users:
+        counts = counts_by_user.get(user.username, {})
+        ips = ips_by_user.get(user.username, {})
+        user.connections_http = counts.get("http", 0)
+        user.connections_http_ips = ips.get("http", 0)
+        user.connections_socks5 = counts.get("socks5", 0)
+        user.connections_socks5_ips = ips.get("socks5", 0)
 
 
 def traffic_worker(stop_event: threading.Event) -> None:
@@ -1617,6 +1952,7 @@ def traffic_worker(stop_event: threading.Event) -> None:
 
                     pending: dict[str, tuple[int, int, int]] = {}
                     log_events: list[TrafficEvent] = []
+                    session_updates: list[tuple[str, str, str, str, datetime]] = []
                     while True:
                         line = log_file.readline()
                         if not line:
@@ -1624,7 +1960,7 @@ def traffic_worker(stop_event: threading.Event) -> None:
                         parsed = parse_traffic_line(line)
                         if parsed is None:
                             continue
-                        username, in_bytes, out_bytes, logged_at = parsed
+                        username, in_bytes, out_bytes, logged_at, protocol, session_key, client_ip = parsed
                         log_events.append(
                             TrafficEvent(
                                 username=username,
@@ -1633,6 +1969,11 @@ def traffic_worker(stop_event: threading.Event) -> None:
                                 logged_at=logged_at,
                             )
                         )
+                        if protocol and session_key:
+                            seen_at = logged_at or datetime.now(timezone.utc)
+                            session_updates.append(
+                                (username, protocol, session_key, client_ip or "", seen_at)
+                            )
                         req_count, traffic_in, traffic_out = pending.get(username, (0, 0, 0))
                         pending[username] = (req_count + 1, traffic_in + in_bytes, traffic_out + out_bytes)
 
@@ -1667,7 +2008,9 @@ def traffic_worker(stop_event: threading.Event) -> None:
                             user.traffic_out_bytes += traffic_out
                             user.traffic_bytes += traffic_in + traffic_out
 
+                    upsert_proxy_sessions(session, session_updates)
                     poll_mtproto_stats(session)
+                    refresh_proxy_connection_counts(session, datetime.now(timezone.utc))
 
                     now_ts = int(datetime.now(timezone.utc).timestamp())
                     if state.last_sample_ts == 0 or now_ts - state.last_sample_ts >= TRAFFIC_SAMPLING_INTERVAL_SECONDS:
@@ -2189,6 +2532,44 @@ def list_users(
     )
 
 
+@app.get("/api/connections", response_model=ConnectionsPageOut)
+def list_connections(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=50),
+    q: str = Query("", max_length=200),
+    sort_by: str = Query("connections_total", max_length=32),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    _auth: str = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    q_clean = q.strip()
+    now = datetime.now(timezone.utc)
+    online_usernames = fetch_online_usernames(db, now)
+    stmt = select(ProxyUser).order_by(*connections_list_order_clauses(sort_by, sort_dir, now=now))
+    count_stmt = select(func.count()).select_from(ProxyUser)
+    if q_clean:
+        esc = q_clean.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{esc}%"
+        filt = ProxyUser.username.like(pattern, escape="\\")
+        stmt = stmt.where(filt)
+        count_stmt = count_stmt.where(filt)
+    total = int(db.scalar(count_stmt) or 0)
+    total_pages = max(1, (total + per_page - 1) // per_page) if total else 1
+    if page > total_pages:
+        page = total_pages
+    offset = (page - 1) * per_page
+    users = db.scalars(stmt.offset(offset).limit(per_page)).all()
+    return ConnectionsPageOut(
+        totals=aggregate_connection_totals(db),
+        items=[
+            connection_user_to_out(u, now=now, is_online=(u.username in online_usernames)) for u in users
+        ],
+        total=total,
+        page=page,
+        per_page=per_page,
+    )
+
+
 @app.get("/api/users/chart-options", response_model=list[UserChartOptionOut])
 def list_users_chart_options(_auth: str = Depends(require_auth), db: Session = Depends(get_db)):
     rows = db.execute(select(ProxyUser.id, ProxyUser.username).order_by(ProxyUser.id.asc())).all()
@@ -2202,6 +2583,10 @@ def _bytes_to_gib_str(n: int | None) -> str:
     gib = n / (1024**3)
     s = f"{gib:.6f}".rstrip("0").rstrip(".")
     return s or "0"
+
+
+def _format_protocol_connections_label(tcp: int, ips: int) -> str:
+    return f"{tcp} TCP · {ips} IP"
 
 
 def _client_public_hosts(request: Request) -> tuple[str, str]:
@@ -2251,6 +2636,10 @@ def export_users_report(_auth: str = Depends(require_auth), db: Session = Depend
             "Исходящий_ГБ",
             "Всего_ГБ",
             "Запросов",
+            "Подключ_HTTP",
+            "Подключ_SOCKS5",
+            "Подключ_MTProto",
+            "Подключ_всего",
             "Онлайн",
             "Был_онлайн_UTC",
             "Создан_UTC",
@@ -2273,6 +2662,12 @@ def export_users_report(_auth: str = Depends(require_auth), db: Session = Depend
                 _bytes_to_gib_str(row.traffic_out_bytes),
                 _bytes_to_gib_str(row.traffic_bytes),
                 row.requests_count,
+                row.connections_http,
+                row.connections_socks5,
+                _format_protocol_connections_label(row.connections_http, row.connections_http_ips),
+                _format_protocol_connections_label(row.connections_socks5, row.connections_socks5_ips),
+                _format_protocol_connections_label(row.connections_mtproto, row.connections_mtproto_ips),
+                _format_protocol_connections_label(row.connections_total, row.connections_total_ips),
                 "да" if row.is_online else "нет",
                 row.last_online_at.isoformat() if row.last_online_at else "",
                 row.created_at.isoformat() if row.created_at else "",
@@ -2316,6 +2711,10 @@ def export_users_report_with_links(
             "Исходящий_ГБ",
             "Всего_ГБ",
             "Запросов",
+            "Подключ_HTTP",
+            "Подключ_SOCKS5",
+            "Подключ_MTProto",
+            "Подключ_всего",
             "Онлайн",
             "Был_онлайн_UTC",
             "Создан_UTC",
@@ -2351,6 +2750,12 @@ def export_users_report_with_links(
                 _bytes_to_gib_str(row.traffic_out_bytes),
                 _bytes_to_gib_str(row.traffic_bytes),
                 row.requests_count,
+                row.connections_http,
+                row.connections_socks5,
+                _format_protocol_connections_label(row.connections_http, row.connections_http_ips),
+                _format_protocol_connections_label(row.connections_socks5, row.connections_socks5_ips),
+                _format_protocol_connections_label(row.connections_mtproto, row.connections_mtproto_ips),
+                _format_protocol_connections_label(row.connections_total, row.connections_total_ips),
                 "да" if row.is_online else "нет",
                 row.last_online_at.isoformat() if row.last_online_at else "",
                 row.created_at.isoformat() if row.created_at else "",
@@ -2545,6 +2950,7 @@ def delete_user(user_id: int, _auth: str = Depends(require_auth), db: Session = 
     user = db.get(ProxyUser, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+    db.execute(delete(ProxyActiveSession).where(ProxyActiveSession.username == user.username))
     db.delete(user)
     db.commit()
     sync_proxy_config(db)

@@ -422,6 +422,95 @@ input::placeholder {
   max-width: 460px;
 }
 
+.create-form-inline {
+  max-width: none;
+}
+
+.card-body-tight {
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+.create-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+}
+
+.create-form-intro {
+  flex: 0 0 auto;
+  align-self: center;
+  padding-right: 4px;
+}
+
+.create-form-intro .card-title {
+  margin: 0;
+  white-space: nowrap;
+  font-size: 1rem;
+}
+
+.field-compact {
+  flex: 1 1 120px;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.field-compact-date {
+  flex: 0 1 168px;
+  min-width: 148px;
+}
+
+.field-compact-limit {
+  flex: 0 1 88px;
+  min-width: 72px;
+  max-width: 100px;
+}
+
+.field-compact .field-label {
+  margin-bottom: 4px;
+  font-size: 0.75rem;
+}
+
+.field-compact input {
+  padding: 8px 10px;
+  font-size: 0.8125rem;
+}
+
+.proto-toggles-inline {
+  flex: 0 0 auto;
+  margin-bottom: 0;
+  gap: 6px;
+}
+
+.check-tile-compact {
+  padding: 8px 10px;
+  font-size: 0.75rem;
+  gap: 6px;
+}
+
+.create-form-submit {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  white-space: nowrap;
+}
+
+.create-form-inline .mtproto-ad-block {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(36, 49, 82, 0.55);
+}
+
+.cell-mtproto {
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+.cell-conn {
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
 .create-form-wide {
   max-width: 640px;
 }
@@ -843,6 +932,15 @@ input::placeholder {
   display: none;
 }
 
+.menu-item-danger {
+  color: #fca5a5;
+}
+
+.menu-item-danger:hover {
+  background: rgba(127, 29, 29, 0.35);
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
 .table-wrap {
   overflow: auto;
   margin: 0;
@@ -883,6 +981,132 @@ table.users-table {
   border-collapse: collapse;
   min-width: 1160px;
   table-layout: auto;
+}
+
+table.users-table.users-table-compact {
+  min-width: 760px;
+  table-layout: fixed;
+}
+
+table.users-table.users-table-compact th,
+table.users-table.users-table-compact td {
+  padding: 3px 4px;
+  font-size: 0.6875rem;
+  line-height: 1.25;
+}
+
+table.users-table.users-table-compact th {
+  padding-top: 5px;
+  padding-bottom: 5px;
+  font-size: 0.625rem;
+}
+
+table.users-table.users-table-compact .col-id {
+  width: 2rem;
+}
+
+table.users-table.users-table-compact .col-user {
+  width: 8rem;
+  max-width: 8rem;
+}
+
+table.users-table.users-table-compact .col-user strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
+table.users-table.users-table-compact .col-protos {
+  width: 3.25rem;
+  text-align: center;
+}
+
+table.users-table.users-table-compact .col-traffic {
+  width: 4.25rem;
+}
+
+table.users-table.users-table-compact .col-req {
+  width: 3rem;
+  text-align: center;
+}
+
+table.users-table.users-table-compact .col-status {
+  width: 3.5rem;
+  text-align: center;
+}
+
+table.users-table.users-table-compact .col-limits {
+  width: 6.5rem;
+  max-width: 6.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+table.users-table.users-table-compact .col-actions {
+  width: 2.25rem;
+  text-align: center;
+  overflow: visible;
+}
+
+.proto-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 3px;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  line-height: 1;
+  margin: 0 1px;
+  vertical-align: middle;
+}
+
+.proto-chip.on {
+  background: var(--ok-bg);
+  color: #86efac;
+}
+
+.proto-chip.off {
+  color: var(--muted2);
+  opacity: 0.4;
+}
+
+.status-pill-compact {
+  padding: 2px 5px;
+  font-size: 0.5625rem;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.cell-limits {
+  color: var(--muted);
+  font-size: 0.625rem;
+}
+
+.row-actions-menu {
+  display: inline-flex;
+  justify-content: center;
+}
+
+.row-actions-menu .row-menu-btn {
+  min-width: 1.75rem;
+  padding: 2px 6px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.row-actions-menu .menu {
+  min-width: 11.5rem;
+  padding: 4px;
+}
+
+.row-actions-menu .menu-item-btn {
+  padding: 6px 8px;
+  font-size: 0.75rem;
 }
 
 table.users-table th,
@@ -1083,7 +1307,7 @@ table.users-table .row-actions {
   max-width: 15rem;
 }
 
-table.users-table .row-actions .btn-compact {
+table.users-table:not(.users-table-compact) .row-actions .btn-compact {
   padding: 3px 6px;
   font-size: 10px;
   border-radius: 6px;
@@ -1103,6 +1327,16 @@ table.users-table .row-actions .btn-compact {
 @media (max-width: 899px) {
   .traffic-summary-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+.connections-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 1099px) {
+  .connections-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1134,6 +1368,11 @@ table.users-table .row-actions .btn-compact {
 
 .traffic-summary-total-dd {
   text-align: right;
+}
+
+.traffic-summary-conn-dd {
+  font-size: 0.875rem;
+  font-weight: 600;
 }
 
 .traffic-summary-total-main {
@@ -1416,6 +1655,32 @@ label:not(.field):not(.check-row):not(.check-tile):not(.menu-item-label) {
   .create-form,
   .create-form-wide {
     max-width: none;
+  }
+
+  .create-form-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .create-form-intro {
+    align-self: flex-start;
+    padding-right: 0;
+    margin-bottom: 4px;
+  }
+
+  .field-compact,
+  .field-compact-date,
+  .field-compact-limit {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  .proto-toggles-inline {
+    width: 100%;
+  }
+
+  .create-form-submit {
+    width: 100%;
   }
 
   .row-wrap label {
