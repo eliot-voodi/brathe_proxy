@@ -244,12 +244,9 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
   echo "Updating existing repository in ${INSTALL_DIR}..."
   git_with_auth -C "${INSTALL_DIR}" remote set-url origin "$(authenticated_repo_url)"
   git_with_auth -C "${INSTALL_DIR}" fetch origin "${BRANCH_VALUE}" --prune
-  git_with_auth -C "${INSTALL_DIR}" checkout "${BRANCH_VALUE}"
-  # Совпадает с origin (в т.ч. для shallow clone); при расхождении — жёстко как на GitHub.
-  if ! git_with_auth -C "${INSTALL_DIR}" merge --ff-only "origin/${BRANCH_VALUE}"; then
-    echo "WARN: fast-forward failed, resetting to origin/${BRANCH_VALUE} (локальные коммиты в ${INSTALL_DIR} будут потеряны)."
-    git_with_auth -C "${INSTALL_DIR}" reset --hard "origin/${BRANCH_VALUE}"
-  fi
+  git_with_auth -C "${INSTALL_DIR}" checkout -B "${BRANCH_VALUE}" "origin/${BRANCH_VALUE}"
+  git_with_auth -C "${INSTALL_DIR}" reset --hard "origin/${BRANCH_VALUE}"
+  git_with_auth -C "${INSTALL_DIR}" clean -fd
   git_with_auth -C "${INSTALL_DIR}" remote set-url origin "$(clean_repo_url "${REPO_URL_VALUE}")"
 else
   echo "Cloning repository to ${INSTALL_DIR}..."
@@ -259,6 +256,12 @@ else
   rm -rf "${INSTALL_DIR}"
   git_with_auth clone --depth 1 --branch "${BRANCH_VALUE}" "$(authenticated_repo_url)" "${INSTALL_DIR}"
   git_with_auth -C "${INSTALL_DIR}" remote set-url origin "$(clean_repo_url "${REPO_URL_VALUE}")"
+fi
+
+if [[ ! -d "${INSTALL_DIR}/backend" || ! -d "${INSTALL_DIR}/mtproto" || ! -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
+  echo "ERROR: git checkout is incomplete (backend/mtproto missing) in ${INSTALL_DIR}."
+  echo "Fix: cd ${INSTALL_DIR} && git fetch origin && git reset --hard origin/${BRANCH_VALUE}"
+  exit 1
 fi
 
 PANEL_GIT_REVISION="$(git -C "${INSTALL_DIR}" rev-parse HEAD)"
