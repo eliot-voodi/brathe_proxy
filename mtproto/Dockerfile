@@ -1,16 +1,24 @@
 FROM debian:12-slim
 
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 ARG TELEMT_VERSION=latest
 
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl tar; \
     rm -rf /var/lib/apt/lists/*; \
-    case "${TARGETARCH}" in \
+    arch="${TARGETARCH:-}"; \
+    if [ -z "${arch}" ]; then \
+        case "$(uname -m)" in \
+            x86_64) arch=amd64 ;; \
+            aarch64|arm64) arch=arm64 ;; \
+            *) echo "Unsupported uname: $(uname -m)" >&2; exit 1 ;; \
+        esac; \
+    fi; \
+    case "${arch}" in \
         amd64) ASSET="telemt-x86_64-linux-musl.tar.gz" ;; \
         arm64) ASSET="telemt-aarch64-linux-musl.tar.gz" ;; \
-        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+        *) echo "Unsupported TARGETARCH: ${arch}" >&2; exit 1 ;; \
     esac; \
     VERSION="${TELEMT_VERSION#refs/tags/}"; \
     if [ -z "${VERSION}" ] || [ "${VERSION}" = "latest" ]; then \
