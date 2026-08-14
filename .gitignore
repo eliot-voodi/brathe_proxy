@@ -1,6 +1,14 @@
 .env
-data/
+*.db
+*.db-wal
+*.db-shm
 backend/app/__pycache__/
 **/__pycache__/
 *.pyc
 *.pyo
+
+# Runtime and secrets stay on the server, not in git.
+data/*
+!data/runtime/
+data/runtime/*
+!data/runtime/*/.gitkeep

@@ -72,10 +72,10 @@ services:
     volumes:
       - ${PANEL_DATA_HOST_PATH:-./data}:/data
       - /var/run/docker.sock:/var/run/docker.sock
-      - proxy_conf:/opt/proxy/conf
-      - proxy_logs:/opt/proxy/logs
-      - mtproto_conf:/opt/mtproto
-      - singbox_conf:/opt/sing-box
+      - ${PANEL_DATA_HOST_PATH:-./data}/runtime/proxy-conf:/opt/proxy/conf
+      - ${PANEL_DATA_HOST_PATH:-./data}/runtime/proxy-logs:/opt/proxy/logs
+      - ${PANEL_DATA_HOST_PATH:-./data}/runtime/mtproto:/opt/mtproto
+      - ${PANEL_DATA_HOST_PATH:-./data}/runtime/sing-box:/opt/sing-box
     healthcheck:
       test:
         [
@@ -100,7 +100,7 @@ services:
       backend:
         condition: service_healthy
     volumes:
-      - singbox_conf:/etc/sing-box
+      - ${PANEL_DATA_HOST_PATH:-./data}/runtime/sing-box:/etc/sing-box
     command: ["run", "-c", "/etc/sing-box/config.json"]
     expose:
       - "1080"
@@ -126,8 +126,8 @@ services:
       sing-box:
         condition: service_healthy
     volumes:
-      - proxy_conf:/etc/3proxy
-      - proxy_logs:/var/log/3proxy
+      - ${PANEL_DATA_HOST_PATH:-./data}/runtime/proxy-conf:/etc/3proxy
+      - ${PANEL_DATA_HOST_PATH:-./data}/runtime/proxy-logs:/var/log/3proxy
     ports:
       - "${HTTP_PROXY_PORT:-13128}:3128"
     networks:
@@ -143,16 +143,10 @@ services:
       sing-box:
         condition: service_healthy
     volumes:
-      - mtproto_conf:/config
+      - ${PANEL_DATA_HOST_PATH:-./data}/runtime/mtproto:/config
     expose:
       - "9090"
     ports:
       - "${MTPROTO_PUBLIC_PORT:-2053}:3443"
     networks:
       - proxy_internal
-
-volumes:
-  proxy_conf:
-  proxy_logs:
-  mtproto_conf:
-  singbox_conf:
