@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import logging
 import os
 import shutil
 import string
@@ -26,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from pydantic import BaseModel, Field, ValidationError, field_validator
-from sqlalchemy import Boolean, DateTime, Integer, String, and_, case, create_engine, delete, func, or_, select, text
+from sqlalchemy import Boolean, DateTime, Integer, String, and_, case, create_engine, delete, event, func, or_, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -44,18 +45,36 @@ BACKUP_DIR = Path("/data/backups")
 PANEL_SECRET_KEY = os.environ.get("PANEL_SECRET_KEY", "change-me-in-production")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_TOPIC_ID = os.environ.get("TELEGRAM_TOPIC_ID", "").strip()
 PROXY_PUBLIC_HOST = os.environ.get("PROXY_PUBLIC_HOST", "auto")
 MTPROTO_PUBLIC_HOST = os.environ.get("MTPROTO_PUBLIC_HOST", "").strip()
 PROXY_PUBLIC_SOCKS_PORT = int(os.environ.get("PROXY_PUBLIC_SOCKS_PORT", "11080"))
 PROXY_PUBLIC_HTTP_PORT = int(os.environ.get("PROXY_PUBLIC_HTTP_PORT", "13128"))
 PROXY_LOGDUMP_BYTES = int(os.environ.get("PROXY_LOGDUMP_BYTES", "65536"))
-TRAFFIC_POLL_INTERVAL_SECONDS = float(os.environ.get("TRAFFIC_POLL_INTERVAL_SECONDS", "2.0"))
+TRAFFIC_POLL_INTERVAL_SECONDS = float(os.environ.get("TRAFFIC_POLL_INTERVAL_SECONDS", "8.0"))
+TRAFFIC_SAMPLING_INTERVAL_SECONDS = int(os.environ.get("TRAFFIC_SAMPLING_INTERVAL_SECONDS", "180"))
+TRAFFIC_SAMPLES_PER_USER = os.environ.get("TRAFFIC_SAMPLES_PER_USER", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+TRAFFIC_EVENTS_ENABLED = os.environ.get("TRAFFIC_EVENTS_ENABLED", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+TRAFFIC_EVENTS_RETENTION_HOURS = int(os.environ.get("TRAFFIC_EVENTS_RETENTION_HOURS", "6"))
+CONNECTION_STATS_INTERVAL_SECONDS = float(os.environ.get("CONNECTION_STATS_INTERVAL_SECONDS", "20"))
+MTPROTO_POLL_INTERVAL_SECONDS = float(os.environ.get("MTPROTO_POLL_INTERVAL_SECONDS", "20"))
 MTPROTO_INTERNAL_PORT = int(os.environ.get("MTPROTO_INTERNAL_PORT", "3443"))
 MTPROTO_PUBLIC_PORT = int(os.environ.get("MTPROTO_PUBLIC_PORT", "2053"))
 MTPROTO_FAKE_TLS_DOMAIN = os.environ.get("MTPROTO_FAKE_TLS_DOMAIN", "yandex.ru")
 MTPROTO_SECRET_MODE = os.environ.get("MTPROTO_SECRET_MODE", "faketls").strip().lower()
 MTPROTO_STATS_URL = os.environ.get("MTPROTO_STATS_URL", "http://mtproto:9090/stats")
-TRAFFIC_SAMPLING_INTERVAL_SECONDS = int(os.environ.get("TRAFFIC_SAMPLING_INTERVAL_SECONDS", "30"))
 ACCESS_RESYNC_INTERVAL_SECONDS = float(os.environ.get("ACCESS_RESYNC_INTERVAL_SECONDS", "30"))
 VLESS_CHAIN_PROBE_TIMEOUT = float(os.environ.get("VLESS_CHAIN_PROBE_TIMEOUT", "4"))
 VLESS_CHAIN_PROBE_HOST = os.environ.get("VLESS_CHAIN_PROBE_HOST", "1.1.1.1").strip()
@@ -67,16 +86,29 @@ AUTO_RESTART_VLESS_SERVICES = (
 VLESS_RESTART_SERVICES = tuple(
     s.strip() for s in os.environ.get("VLESS_RESTART_SERVICES", "sing-box,proxy,mtproto").split(",") if s.strip()
 )
-PRUNE_TRAFFIC_EVENTS_MAX_ROWS = int(os.environ.get("PRUNE_TRAFFIC_EVENTS_MAX_ROWS", "500000"))
-PRUNE_TRAFFIC_EVENTS_CHUNK = int(os.environ.get("PRUNE_TRAFFIC_EVENTS_CHUNK", "100000"))
+PRUNE_TRAFFIC_EVENTS_MAX_ROWS = int(os.environ.get("PRUNE_TRAFFIC_EVENTS_MAX_ROWS", "50000"))
+PRUNE_TRAFFIC_EVENTS_CHUNK = int(os.environ.get("PRUNE_TRAFFIC_EVENTS_CHUNK", "50000"))
 # Семплы для графиков: API смотрит максимум на 24 ч; старше — мёртвый вес. 0 = не удалять.
-TRAFFIC_SAMPLES_RETENTION_HOURS = int(os.environ.get("TRAFFIC_SAMPLES_RETENTION_HOURS", "48"))
+TRAFFIC_SAMPLES_RETENTION_HOURS = int(os.environ.get("TRAFFIC_SAMPLES_RETENTION_HOURS", "24"))
 TRAFFIC_SAMPLES_PRUNE_CHUNK = int(os.environ.get("TRAFFIC_SAMPLES_PRUNE_CHUNK", "10000"))
 TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES = int(os.environ.get("TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES", "50"))
+SQLITE_VACUUM_INTERVAL_SECONDS = int(os.environ.get("SQLITE_VACUUM_INTERVAL_SECONDS", "86400"))
 ONLINE_LOOKBACK_SECONDS = int(os.environ.get("ONLINE_LOOKBACK_SECONDS", "300"))
 ONLINE_MIN_SPAN_SECONDS = int(os.environ.get("ONLINE_MIN_SPAN_SECONDS", "60"))
 CONNECTION_SESSION_TTL_SECONDS = int(os.environ.get("CONNECTION_SESSION_TTL_SECONDS", "120"))
 SESSION_COOKIE_NAME = "panel_session"
+# IP allowlist for panel/API. Non-empty = enforce. Sources: PANEL_ALLOW_IPS + /data/panel_allow_ips.txt
+PANEL_ALLOW_IPS_RAW = os.environ.get("PANEL_ALLOW_IPS", "").strip()
+PANEL_ALLOW_IPS_FILE = Path(os.environ.get("PANEL_ALLOW_IPS_FILE", "/data/panel_allow_ips.txt"))
+PANEL_OPERATORS_FILE = Path(os.environ.get("PANEL_OPERATORS_FILE", "/data/panel_operators.json"))
+PANEL_TRUST_X_FORWARDED_FOR = (
+    os.environ.get("PANEL_TRUST_X_FORWARDED_FOR", "false").strip().lower() in ("1", "true", "yes", "on")
+)
+_allow_nets_cache: tuple[float, tuple] | None = None
+_ALLOW_NETS_TTL = 5.0
+_operators_cache: tuple[float, dict[str, dict]] | None = None
+_OPERATORS_TTL = 5.0
+_vacuum_last_ts: float = 0.0
 SESSION_TTL_SECONDS = 12 * 60 * 60
 MAX_IMPORT_ROWS = 500
 _MTPROTO_AD_TAG_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
@@ -85,15 +117,14 @@ IMPORT_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "username": ("username", "логин", "user", "login"),
     "password": ("password", "пароль", "pass"),
     "allow_http": ("allow_http", "http"),
-    "allow_socks5": ("allow_socks5", "socks5", "socks"),
     "allow_mtproto": ("allow_mtproto", "mtproto"),
     "expires_at": ("expires_at", "expires", "действует_до", "действуетдо"),
     "traffic_limit_gb": ("traffic_limit_gb", "limit_gb", "лимит_gb", "лимитгб", "лимит"),
 }
 
-IMPORT_TEMPLATE_CSV = """\ufeffusername;password;allow_http;allow_socks5;allow_mtproto;expires_at;traffic_limit_gb
-import_example1;;да;да;нет;2030-12-31T23:59:59+00:00;10
-import_example2;;да;да;нет;;
+IMPORT_TEMPLATE_CSV = """\ufeffusername;password;allow_http;allow_mtproto;expires_at;traffic_limit_gb
+import_example1;;да;нет;2030-12-31T23:59:59+00:00;10
+import_example2;;да;нет;;
 """
 
 _public_ip_cache: str | None = None
@@ -112,6 +143,7 @@ class ProxyUser(Base):
     allow_http: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_socks5: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_mtproto: Mapped[bool] = mapped_column(Boolean, default=False)
+    session_limit_per_protocol: Mapped[int] = mapped_column(Integer, default=5)
     mtproto_secret: Mapped[str | None] = mapped_column(String(256), nullable=True)
     mtproto_ad_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     mtproto_ad_channel: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -197,6 +229,20 @@ class ProxyActiveSession(Base):
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
+
+def _configure_sqlite_connection(dbapi_conn, _connection_record) -> None:
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.close()
+
+
+if DATABASE_URL.startswith("sqlite"):
+    event.listen(engine, "connect", _configure_sqlite_connection)
+
 templates = Jinja2Templates(directory="/app/templates")
 
 
@@ -204,7 +250,6 @@ class UserCreate(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     password: str | None = Field(default=None, max_length=128)
     allow_http: bool = True
-    allow_socks5: bool = True
     allow_mtproto: bool = False
     mtproto_ad_enabled: bool = False
     mtproto_ad_channel: str | None = Field(default=None, max_length=512)
@@ -250,7 +295,7 @@ class UserCreate(BaseModel):
         value = value.strip().lower()
         return value or None
 
-    @field_validator("allow_socks5", "allow_http")
+    @field_validator("allow_http")
     @classmethod
     def protocol_guard(cls, value: bool) -> bool:
         return value
@@ -259,7 +304,6 @@ class UserCreate(BaseModel):
 class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=3, max_length=128)
     allow_http: bool | None = None
-    allow_socks5: bool | None = None
     allow_mtproto: bool | None = None
     regenerate_mtproto_secret: bool = False
     mtproto_ad_enabled: bool | None = None
@@ -318,7 +362,6 @@ class UserOut(BaseModel):
     username: str
     password: str
     allow_http: bool
-    allow_socks5: bool
     allow_mtproto: bool
     mtproto_secret: str | None
     mtproto_ad_enabled: bool
@@ -330,8 +373,6 @@ class UserOut(BaseModel):
     requests_count: int
     connections_http: int = 0
     connections_http_ips: int = 0
-    connections_socks5: int = 0
-    connections_socks5_ips: int = 0
     connections_mtproto: int = 0
     connections_mtproto_ips: int = 0
     connections_total: int = 0
@@ -382,6 +423,73 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class PanelOperatorOut(BaseModel):
+    username: str
+    username_prefix: str
+    password: str
+
+
+class PanelOperatorCreate(BaseModel):
+    username: str = Field(min_length=2, max_length=64)
+    password: str | None = Field(default=None, max_length=128)
+    username_prefix: str = Field(min_length=1, max_length=64)
+
+    @field_validator("username")
+    @classmethod
+    def operator_username_clean(cls, value: str) -> str:
+        value = value.strip()
+        if not value or " " in value or ":" in value or "|" in value or "/" in value:
+            raise ValueError("invalid username")
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def operator_password_clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if len(value) < 6:
+            raise ValueError("password must be at least 6 characters")
+        return value
+
+    @field_validator("username_prefix")
+    @classmethod
+    def operator_prefix_clean(cls, value: str) -> str:
+        value = value.strip()
+        if not value or " " in value or ":" in value or "|" in value:
+            raise ValueError("invalid username_prefix")
+        return value
+
+
+class PanelOperatorUpdate(BaseModel):
+    password: str | None = Field(default=None, max_length=128)
+    username_prefix: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("password")
+    @classmethod
+    def operator_password_clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if len(value) < 6:
+            raise ValueError("password must be at least 6 characters")
+        return value
+
+    @field_validator("username_prefix")
+    @classmethod
+    def operator_prefix_clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value or " " in value or ":" in value or "|" in value:
+            raise ValueError("invalid username_prefix")
+        return value
+
+
 class TrafficSeriesPoint(BaseModel):
     captured_at: datetime
     traffic_in_bytes: int
@@ -407,8 +515,6 @@ class TrafficSummaryOut(BaseModel):
 class ConnectionTotalsOut(BaseModel):
     connections_http: int
     connections_http_ips: int = 0
-    connections_socks5: int
-    connections_socks5_ips: int = 0
     connections_mtproto: int
     connections_mtproto_ips: int = 0
     connections_total: int
@@ -420,12 +526,9 @@ class ConnectionUserOut(BaseModel):
     id: int
     username: str
     allow_http: bool
-    allow_socks5: bool
     allow_mtproto: bool
     connections_http: int
     connections_http_ips: int = 0
-    connections_socks5: int
-    connections_socks5_ips: int = 0
     connections_mtproto: int
     connections_mtproto_ips: int = 0
     connections_total: int
@@ -470,14 +573,17 @@ def calendar_month_bounds_utc(now: datetime | None = None) -> tuple[datetime, da
     return month_start, next_month, label
 
 
-def aggregate_users_traffic_totals(db: Session) -> tuple[int, int, int]:
-    row = db.execute(
-        select(
-            func.coalesce(func.sum(ProxyUser.traffic_in_bytes), 0),
-            func.coalesce(func.sum(ProxyUser.traffic_out_bytes), 0),
-            func.coalesce(func.sum(ProxyUser.traffic_bytes), 0),
-        )
-    ).one()
+def aggregate_users_traffic_totals(
+    db: Session, *, username_prefix: str | None = None
+) -> tuple[int, int, int]:
+    stmt = select(
+        func.coalesce(func.sum(ProxyUser.traffic_in_bytes), 0),
+        func.coalesce(func.sum(ProxyUser.traffic_out_bytes), 0),
+        func.coalesce(func.sum(ProxyUser.traffic_bytes), 0),
+    )
+    if username_prefix:
+        stmt = stmt.where(_username_prefix_filter(username_prefix))
+    row = db.execute(stmt).one()
     return int(row[0]), int(row[1]), int(row[2])
 
 
@@ -524,41 +630,51 @@ def earliest_server_first_connection(db: Session) -> datetime | None:
     )
 
 
-def build_traffic_summary(db: Session, now: datetime | None = None) -> TrafficSummaryOut:
+def build_traffic_summary(
+    db: Session, now: datetime | None = None, *, username_prefix: str | None = None
+) -> TrafficSummaryOut:
     now = now or datetime.now(timezone.utc)
     month_start, month_end_exclusive, month_label = calendar_month_bounds_utc(now)
-    current = aggregate_users_traffic_totals(db)
+    current = aggregate_users_traffic_totals(db, username_prefix=username_prefix)
     first_connection_at = earliest_server_first_connection(db)
     all_time = TrafficPeriodSummary(
         traffic_in_bytes=current[0],
         traffic_out_bytes=current[1],
         traffic_bytes=current[2],
     )
-    baseline_row = latest_aggregate_traffic_sample_before(db, month_start)
-    baseline = None
-    if baseline_row is not None:
-        baseline = (baseline_row.traffic_in_bytes, baseline_row.traffic_out_bytes, baseline_row.traffic_bytes)
-    else:
-        first_in_month = db.scalars(
-            select(TrafficSample)
-            .where(
-                TrafficSample.user_id.is_(None),
-                TrafficSample.captured_at >= month_start,
-                TrafficSample.captured_at < month_end_exclusive,
-            )
-            .order_by(TrafficSample.captured_at.asc())
-            .limit(1)
-        ).first()
-        if first_in_month is not None:
-            baseline = (
-                first_in_month.traffic_in_bytes,
-                first_in_month.traffic_out_bytes,
-                first_in_month.traffic_bytes,
-            )
-    if baseline is not None:
-        month = traffic_delta_since_baseline(current, baseline)
-    else:
+    # Per-prefix operators only see live user totals (no global aggregate samples).
+    if username_prefix:
         month = all_time
+    else:
+        baseline_row = latest_aggregate_traffic_sample_before(db, month_start)
+        baseline = None
+        if baseline_row is not None:
+            baseline = (
+                baseline_row.traffic_in_bytes,
+                baseline_row.traffic_out_bytes,
+                baseline_row.traffic_bytes,
+            )
+        else:
+            first_in_month = db.scalars(
+                select(TrafficSample)
+                .where(
+                    TrafficSample.user_id.is_(None),
+                    TrafficSample.captured_at >= month_start,
+                    TrafficSample.captured_at < month_end_exclusive,
+                )
+                .order_by(TrafficSample.captured_at.asc())
+                .limit(1)
+            ).first()
+            if first_in_month is not None:
+                baseline = (
+                    first_in_month.traffic_in_bytes,
+                    first_in_month.traffic_out_bytes,
+                    first_in_month.traffic_bytes,
+                )
+        if baseline is not None:
+            month = traffic_delta_since_baseline(current, baseline)
+        else:
+            month = all_time
     month_end = month_end_exclusive - timedelta(microseconds=1)
     return TrafficSummaryOut(
         all_time=all_time,
@@ -666,6 +782,15 @@ def init_db() -> None:
             conn.execute(text("ALTER TABLE proxy_users ADD COLUMN connections_mtproto INTEGER DEFAULT 0"))
         if "connections_mtproto_ips" not in columns:
             conn.execute(text("ALTER TABLE proxy_users ADD COLUMN connections_mtproto_ips INTEGER DEFAULT 0"))
+        if "session_limit_per_protocol" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN session_limit_per_protocol INTEGER DEFAULT 5"))
+        conn.execute(
+            text(
+                "UPDATE proxy_users "
+                "SET session_limit_per_protocol = 5 "
+                "WHERE session_limit_per_protocol IS NULL OR session_limit_per_protocol < 1"
+            )
+        )
         session_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(proxy_active_sessions)")).fetchall()]
         if session_columns and "client_ip" not in session_columns:
             conn.execute(text("ALTER TABLE proxy_active_sessions ADD COLUMN client_ip TEXT DEFAULT ''"))
@@ -725,23 +850,42 @@ def _sqlite_backup_file(dest_path: Path) -> None:
         src_conn.close()
 
 
-def maybe_prune_traffic_events(session: Session) -> None:
+def maybe_prune_traffic_events(session: Session) -> bool:
+    deleted_any = False
+    if not TRAFFIC_EVENTS_ENABLED:
+        cnt = int(session.scalar(select(func.count()).select_from(TrafficEvent)) or 0)
+        if cnt > 0:
+            session.execute(delete(TrafficEvent))
+            deleted_any = True
+        return deleted_any
+    if TRAFFIC_EVENTS_RETENTION_HOURS > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=TRAFFIC_EVENTS_RETENTION_HOURS)
+        res = session.execute(
+            text("DELETE FROM traffic_events WHERE logged_at IS NOT NULL AND logged_at < :cutoff"),
+            {"cutoff": cutoff},
+        )
+        if (res.rowcount or 0) > 0:
+            deleted_any = True
     cnt = session.scalar(select(func.count()).select_from(TrafficEvent))
     if cnt is None or cnt <= PRUNE_TRAFFIC_EVENTS_MAX_ROWS:
-        return
-    session.execute(
+        return deleted_any
+    res = session.execute(
         text(
             "DELETE FROM traffic_events WHERE id IN "
             "(SELECT id FROM traffic_events ORDER BY id ASC LIMIT :lim)"
         ),
         {"lim": PRUNE_TRAFFIC_EVENTS_CHUNK},
     )
+    if (res.rowcount or 0) > 0:
+        deleted_any = True
+    return deleted_any
 
 
-def maybe_prune_traffic_samples(session: Session) -> None:
+def maybe_prune_traffic_samples(session: Session) -> bool:
     """Удаляет старые строки traffic_samples (графики в API — до 24 ч)."""
     if TRAFFIC_SAMPLES_RETENTION_HOURS <= 0:
-        return
+        return False
+    deleted_any = False
     cutoff = datetime.now(timezone.utc) - timedelta(hours=TRAFFIC_SAMPLES_RETENTION_HOURS)
     for _ in range(max(1, TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES)):
         res = session.execute(
@@ -753,8 +897,44 @@ def maybe_prune_traffic_samples(session: Session) -> None:
             {"cutoff": cutoff, "lim": TRAFFIC_SAMPLES_PRUNE_CHUNK},
         )
         deleted = res.rowcount or 0
+        if deleted > 0:
+            deleted_any = True
         if deleted < TRAFFIC_SAMPLES_PRUNE_CHUNK:
             break
+    return deleted_any
+
+
+def maybe_sqlite_vacuum_if_needed(*, force: bool = False) -> None:
+    global _vacuum_last_ts
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+    now = time.time()
+    if not force and now - _vacuum_last_ts < SQLITE_VACUUM_INTERVAL_SECONDS:
+        return
+    path = _sqlite_database_path()
+    if path is None:
+        return
+    try:
+        con = sqlite3.connect(str(path))
+        try:
+            con.execute("VACUUM")
+        finally:
+            con.close()
+        _vacuum_last_ts = now
+        logging.getLogger("proxy.panel").info("SQLite VACUUM completed")
+    except Exception as exc:
+        logging.getLogger("proxy.panel").warning("SQLite VACUUM failed: %s", exc)
+
+
+def run_startup_db_maintenance() -> None:
+    """One-time prune + optional purge of per-user samples after config change."""
+    with SessionLocal() as session:
+        if not TRAFFIC_SAMPLES_PER_USER:
+            session.execute(text("DELETE FROM traffic_samples WHERE user_id IS NOT NULL"))
+        maybe_prune_traffic_events(session)
+        maybe_prune_traffic_samples(session)
+        session.commit()
+    maybe_sqlite_vacuum_if_needed(force=True)
 
 
 def get_db():
@@ -1012,10 +1192,24 @@ def restart_vless_runtime_services() -> tuple[bool, str]:
     return True, "ok"
 
 
+def as_utc(dt: datetime | None) -> datetime | None:
+    """Normalize DB/log datetimes for safe comparison (SQLite often returns naive UTC)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def as_utc_naive(dt: datetime) -> datetime:
+    """Store UTC without tzinfo — matches how other panel timestamps are persisted."""
+    return as_utc(dt).replace(tzinfo=None)  # type: ignore[union-attr]
+
+
 def maybe_mark_first_connection(user: ProxyUser, when: datetime | None = None) -> None:
     if user.first_connection_at is not None:
         return
-    user.first_connection_at = when or datetime.now(timezone.utc)
+    user.first_connection_at = as_utc_naive(when or datetime.now(timezone.utc))
 
 
 def mark_user_online_activity(user: ProxyUser, when: datetime | None = None) -> None:
@@ -1094,14 +1288,12 @@ USER_LIST_SORT_FIELDS = frozenset(
         "id",
         "username",
         "allow_http",
-        "allow_socks5",
         "allow_mtproto",
         "traffic_in_bytes",
         "traffic_out_bytes",
         "traffic_bytes",
         "requests_count",
         "connections_http",
-        "connections_socks5",
         "connections_mtproto",
         "connections_total",
         "is_online",
@@ -1117,7 +1309,6 @@ CONNECTION_LIST_SORT_FIELDS = frozenset(
         "id",
         "username",
         "connections_http",
-        "connections_socks5",
         "connections_mtproto",
         "connections_total",
         "is_online",
@@ -1183,18 +1374,14 @@ def users_list_order_clauses(sort_by: str, sort_dir: str, *, now: datetime | Non
         "id": ProxyUser.id,
         "username": ProxyUser.username,
         "allow_http": ProxyUser.allow_http,
-        "allow_socks5": ProxyUser.allow_socks5,
         "allow_mtproto": ProxyUser.allow_mtproto,
         "traffic_in_bytes": ProxyUser.traffic_in_bytes,
         "traffic_out_bytes": ProxyUser.traffic_out_bytes,
         "traffic_bytes": ProxyUser.traffic_bytes,
         "requests_count": ProxyUser.requests_count,
         "connections_http": ProxyUser.connections_http,
-        "connections_socks5": ProxyUser.connections_socks5,
         "connections_mtproto": ProxyUser.connections_mtproto,
-        "connections_total": (
-            ProxyUser.connections_http + ProxyUser.connections_socks5 + ProxyUser.connections_mtproto
-        ),
+        "connections_total": (ProxyUser.connections_http + ProxyUser.connections_mtproto),
         "is_online": user_online_sort_expr(now),
         "last_online_at": ProxyUser.last_online_at,
         "expires_at": ProxyUser.expires_at,
@@ -1216,11 +1403,8 @@ def connections_list_order_clauses(sort_by: str, sort_dir: str, *, now: datetime
         "id": ProxyUser.id,
         "username": ProxyUser.username,
         "connections_http": ProxyUser.connections_http,
-        "connections_socks5": ProxyUser.connections_socks5,
         "connections_mtproto": ProxyUser.connections_mtproto,
-        "connections_total": (
-            ProxyUser.connections_http + ProxyUser.connections_socks5 + ProxyUser.connections_mtproto
-        ),
+        "connections_total": (ProxyUser.connections_http + ProxyUser.connections_mtproto),
         "is_online": user_online_sort_expr(now),
     }
     column = columns[field]
@@ -1231,38 +1415,33 @@ def connections_list_order_clauses(sort_by: str, sort_dir: str, *, now: datetime
     return clauses
 
 
-def aggregate_connection_totals(db: Session) -> ConnectionTotalsOut:
-    row = db.execute(
-        select(
-            func.coalesce(func.sum(ProxyUser.connections_http), 0),
-            func.coalesce(func.sum(ProxyUser.connections_http_ips), 0),
-            func.coalesce(func.sum(ProxyUser.connections_socks5), 0),
-            func.coalesce(func.sum(ProxyUser.connections_socks5_ips), 0),
-            func.coalesce(func.sum(ProxyUser.connections_mtproto), 0),
-            func.coalesce(func.sum(ProxyUser.connections_mtproto_ips), 0),
-        )
-    ).one()
+def aggregate_connection_totals(
+    db: Session, *, username_prefix: str | None = None
+) -> ConnectionTotalsOut:
+    stmt = select(
+        func.coalesce(func.sum(ProxyUser.connections_http), 0),
+        func.coalesce(func.sum(ProxyUser.connections_http_ips), 0),
+        func.coalesce(func.sum(ProxyUser.connections_mtproto), 0),
+        func.coalesce(func.sum(ProxyUser.connections_mtproto_ips), 0),
+    )
+    if username_prefix:
+        stmt = stmt.where(_username_prefix_filter(username_prefix))
+    row = db.execute(stmt).one()
     http_total = int(row[0])
     http_ips = int(row[1])
-    socks_total = int(row[2])
-    socks_ips = int(row[3])
-    mtproto_total = int(row[4])
-    mtproto_ips = int(row[5])
-    all_total = http_total + socks_total + mtproto_total
-    all_ips = http_ips + socks_ips + mtproto_ips
-    users_with_connections = int(
-        db.scalar(
-            select(func.count()).select_from(ProxyUser).where(
-                (ProxyUser.connections_http + ProxyUser.connections_socks5 + ProxyUser.connections_mtproto) > 0
-            )
-        )
-        or 0
+    mtproto_total = int(row[2])
+    mtproto_ips = int(row[3])
+    all_total = http_total + mtproto_total
+    all_ips = http_ips + mtproto_ips
+    users_stmt = select(func.count()).select_from(ProxyUser).where(
+        (ProxyUser.connections_http + ProxyUser.connections_mtproto) > 0
     )
+    if username_prefix:
+        users_stmt = users_stmt.where(_username_prefix_filter(username_prefix))
+    users_with_connections = int(db.scalar(users_stmt) or 0)
     return ConnectionTotalsOut(
         connections_http=http_total,
         connections_http_ips=http_ips,
-        connections_socks5=socks_total,
-        connections_socks5_ips=socks_ips,
         connections_mtproto=mtproto_total,
         connections_mtproto_ips=mtproto_ips,
         connections_total=all_total,
@@ -1274,20 +1453,17 @@ def aggregate_connection_totals(db: Session) -> ConnectionTotalsOut:
 def connection_user_to_out(user: ProxyUser, *, now: datetime | None = None, is_online: bool | None = None) -> ConnectionUserOut:
     now = now or datetime.now(timezone.utc)
     online_value = user_is_online(user, now) if is_online is None else bool(is_online)
-    total_ips = user.connections_http_ips + user.connections_socks5_ips + user.connections_mtproto_ips
+    total_ips = user.connections_http_ips + user.connections_mtproto_ips
     return ConnectionUserOut(
         id=user.id,
         username=user.username,
         allow_http=user.allow_http,
-        allow_socks5=user.allow_socks5,
         allow_mtproto=user.allow_mtproto,
         connections_http=user.connections_http,
         connections_http_ips=user.connections_http_ips,
-        connections_socks5=user.connections_socks5,
-        connections_socks5_ips=user.connections_socks5_ips,
         connections_mtproto=user.connections_mtproto,
         connections_mtproto_ips=user.connections_mtproto_ips,
-        connections_total=user.connections_http + user.connections_socks5 + user.connections_mtproto,
+        connections_total=user.connections_http + user.connections_mtproto,
         connections_total_ips=total_ips,
         is_online=online_value,
     )
@@ -1307,7 +1483,6 @@ def user_to_out(
         username=user.username,
         password=user.password,
         allow_http=user.allow_http,
-        allow_socks5=user.allow_socks5,
         allow_mtproto=user.allow_mtproto,
         mtproto_secret=user.mtproto_secret,
         mtproto_ad_enabled=bool(user.mtproto_ad_enabled),
@@ -1319,12 +1494,10 @@ def user_to_out(
         requests_count=user.requests_count,
         connections_http=user.connections_http,
         connections_http_ips=user.connections_http_ips,
-        connections_socks5=user.connections_socks5,
-        connections_socks5_ips=user.connections_socks5_ips,
         connections_mtproto=user.connections_mtproto,
         connections_mtproto_ips=user.connections_mtproto_ips,
-        connections_total=user.connections_http + user.connections_socks5 + user.connections_mtproto,
-        connections_total_ips=user.connections_http_ips + user.connections_socks5_ips + user.connections_mtproto_ips,
+        connections_total=user.connections_http + user.connections_mtproto,
+        connections_total_ips=user.connections_http_ips + user.connections_mtproto_ips,
         first_connection_at=user.first_connection_at,
         last_online_at=user.last_online_at,
         created_at=user.created_at,
@@ -1357,21 +1530,17 @@ def render_proxy_config(
 ) -> str:
     users_line = []
     http_users = []
-    socks_users = []
     now = datetime.now(timezone.utc)
 
     for user in users:
         users_line.append(f"{escape_3proxy_token(user.username)}:CL:{quote_3proxy_password(user.password)}")
         if user.allow_http and user_has_proxy_access(user, now):
             http_users.append(user.username)
-        if user.allow_socks5 and user_has_proxy_access(user, now):
-            socks_users.append(user.username)
 
     if not users_line:
         users_line.append("disabled_user:CL:disabled_password")
 
     http_acl = ",".join(http_users) if http_users else "__none__"
-    socks_acl = ",".join(socks_users) if socks_users else "__none__"
 
     # В 3proxy «parent» обязан идти сразу после «allow» (иначе Chaining error / цепочка не работает).
     if apply_upstream_chain:
@@ -1380,25 +1549,18 @@ allow {http_acl}
 parent 1000 socks5+ {SINGBOX_SOCKS_HOST} {SINGBOX_SOCKS_PORT}
 proxy -p3128 -a
 """
-        socks_block = f"""flush
-allow {socks_acl}
-parent 1000 socks5+ {SINGBOX_SOCKS_HOST} {SINGBOX_SOCKS_PORT}
-socks -p1080
-"""
     else:
         http_block = f"""flush
 allow {http_acl}
 proxy -p3128 -a
 """
-        socks_block = f"""flush
-allow {socks_acl}
-socks -p1080
-"""
 
-    # Log format: epoch|username|bytes_in|bytes_out|service|client_ip|client_port
+    # Log format: YYMMDDHHMMSS|username|bytes_in|bytes_out|service|client_ip|client_port
+    # Leading "G" is 3proxy log-type char (same as stock default format): without it,
+    # %y/%m/%T/%. are emitted as literals instead of date/time values.
     return f"""monitor /etc/3proxy/3proxy.cfg
 log /var/log/3proxy/traffic.log
-logformat "%T|%U|%I|%O|%N|%C|%c"
+logformat "G%y%m%d%H%M%S|%U|%I|%O|%N|%C|%c"
 # Emit intermediate records for long-lived connections,
 # so panel counters update before the connection is closed.
 logdump {PROXY_LOGDUMP_BYTES} {PROXY_LOGDUMP_BYTES}
@@ -1409,7 +1571,6 @@ nscache 65536
 auth strong
 users {" ".join(users_line)}
 {http_block}
-{socks_block}
 flush
 deny *
 """
@@ -1544,7 +1705,11 @@ def render_mtproto_config(
     enabled_users: list[tuple[str, str]] = []
     ad_tags: list[tuple[str, str]] = []
     for u in users:
-        if not u.allow_mtproto or not u.mtproto_secret or not user_has_proxy_access(u, now):
+        if (
+            not u.allow_mtproto
+            or not u.mtproto_secret
+            or not user_has_proxy_access(u, now)
+        ):
             continue
         enabled_users.append((u.username, mtproto_secret_to_telemt_user_secret(str(u.mtproto_secret))))
         if u.mtproto_ad_enabled and u.mtproto_ad_tag:
@@ -1764,15 +1929,16 @@ def sample_traffic(session: Session, now: datetime) -> None:
         total_in += user.traffic_in_bytes
         total_out += user.traffic_out_bytes
         total_all += user.traffic_bytes
-        session.add(
-            TrafficSample(
-                user_id=user.id,
-                captured_at=now,
-                traffic_in_bytes=user.traffic_in_bytes,
-                traffic_out_bytes=user.traffic_out_bytes,
-                traffic_bytes=user.traffic_bytes,
+        if TRAFFIC_SAMPLES_PER_USER:
+            session.add(
+                TrafficSample(
+                    user_id=user.id,
+                    captured_at=now,
+                    traffic_in_bytes=user.traffic_in_bytes,
+                    traffic_out_bytes=user.traffic_out_bytes,
+                    traffic_bytes=user.traffic_bytes,
+                )
             )
-        )
     session.add(
         TrafficSample(
             user_id=None,
@@ -1807,6 +1973,43 @@ def session_key_from_client(client_ip: str, client_port: str) -> str | None:
     return f"{ip}:{port_num}"
 
 
+def parse_log_timestamp(ts_raw: str) -> datetime | None:
+    """Parse 3proxy log timestamp field into UTC datetime."""
+    raw = (ts_raw or "").strip()
+    if not raw or raw in (".", "T", "t", "-"):
+        return None
+    # Legacy / broken macros sometimes prefix a literal letter: yMMDDHHMMSS
+    if len(raw) == 13 and raw[0].isalpha() and raw[1:].isdigit():
+        raw = raw[1:]
+    try:
+        ts_epoch = float(raw)
+        # Heuristic: real epoch seconds are 10+ digits for modern dates
+        if ts_epoch >= 1_000_000_000:
+            return datetime.fromtimestamp(ts_epoch, tz=timezone.utc)
+    except (ValueError, OSError, OverflowError):
+        pass
+    if raw.isdigit() and len(raw) == 12:
+        try:
+            return datetime.strptime(raw, "%y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    if raw.isdigit() and len(raw) == 10:
+        try:
+            mmddhhmmss = datetime.strptime(raw, "%m%d%H%M%S")
+        except ValueError:
+            return None
+        now = datetime.now(timezone.utc)
+        year = now.year
+        candidate = mmddhhmmss.replace(year=year, tzinfo=timezone.utc)
+        # New-year wrap: log from Dec read in Jan → previous year
+        if candidate - now > timedelta(days=180):
+            candidate = candidate.replace(year=year - 1)
+        elif now - candidate > timedelta(days=180):
+            candidate = candidate.replace(year=year + 1)
+        return candidate
+    return None
+
+
 def parse_traffic_line(
     line: str,
 ) -> tuple[str, int, int, datetime | None, str | None, str | None, str | None] | None:
@@ -1821,12 +2024,7 @@ def parse_traffic_line(
         out_bytes = int(outgoing)
     except ValueError:
         return None
-    logged_at: datetime | None = None
-    try:
-        ts_epoch = float(ts_str)
-        logged_at = datetime.fromtimestamp(ts_epoch, tz=timezone.utc)
-    except (ValueError, OSError, OverflowError):
-        logged_at = None
+    logged_at = parse_log_timestamp(ts_str)
     protocol: str | None = None
     session_key: str | None = None
     client_ip: str | None = None
@@ -1848,9 +2046,10 @@ def upsert_proxy_sessions(
     merged: dict[tuple[str, str, str], tuple[str, datetime]] = {}
     for username, protocol, session_key, client_ip, last_seen in updates:
         key = (username, protocol, session_key)
+        seen = as_utc_naive(last_seen)
         prev = merged.get(key)
-        if prev is None or last_seen > prev[1]:
-            merged[key] = (client_ip, last_seen)
+        if prev is None or seen > prev[1]:
+            merged[key] = (client_ip, seen)
     for (username, protocol, session_key), (client_ip, last_seen) in merged.items():
         row = session.get(ProxyActiveSession, (username, protocol, session_key))
         if row is None:
@@ -1866,12 +2065,13 @@ def upsert_proxy_sessions(
         else:
             if client_ip:
                 row.client_ip = client_ip
-            if last_seen > row.last_seen_at:
+            prev_seen = as_utc_naive(row.last_seen_at) if row.last_seen_at is not None else None
+            if prev_seen is None or last_seen > prev_seen:
                 row.last_seen_at = last_seen
 
 
 def refresh_proxy_connection_counts(session: Session, now: datetime) -> None:
-    cutoff = now - timedelta(seconds=max(1, CONNECTION_SESSION_TTL_SECONDS))
+    cutoff = as_utc_naive(now) - timedelta(seconds=max(1, CONNECTION_SESSION_TTL_SECONDS))
     session.execute(delete(ProxyActiveSession).where(ProxyActiveSession.last_seen_at < cutoff))
 
     count_rows = session.execute(
@@ -1930,9 +2130,16 @@ def refresh_proxy_connection_counts(session: Session, now: datetime) -> None:
 
 def traffic_worker(stop_event: threading.Event) -> None:
     last_access_sync = 0.0
+    last_connection_stats = 0.0
+    last_mtproto_poll = 0.0
     prune_tick = 0
     while not stop_event.is_set():
         try:
+            now_mono = time.monotonic()
+            now_dt = datetime.now(timezone.utc)
+            do_connections = (now_mono - last_connection_stats) >= CONNECTION_STATS_INTERVAL_SECONDS
+            do_mtproto = (now_mono - last_mtproto_poll) >= MTPROTO_POLL_INTERVAL_SECONDS
+
             PROXY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
             if not PROXY_LOG_PATH.exists():
                 PROXY_LOG_PATH.touch()
@@ -1953,6 +2160,8 @@ def traffic_worker(stop_event: threading.Event) -> None:
                     pending: dict[str, tuple[int, int, int]] = {}
                     log_events: list[TrafficEvent] = []
                     session_updates: list[tuple[str, str, str, str, datetime]] = []
+                    first_at_by_user: dict[str, datetime] = {}
+                    last_at_by_user: dict[str, datetime] = {}
                     while True:
                         line = log_file.readline()
                         if not line:
@@ -1961,16 +2170,24 @@ def traffic_worker(stop_event: threading.Event) -> None:
                         if parsed is None:
                             continue
                         username, in_bytes, out_bytes, logged_at, protocol, session_key, client_ip = parsed
-                        log_events.append(
-                            TrafficEvent(
-                                username=username,
-                                bytes_in=in_bytes,
-                                bytes_out=out_bytes,
-                                logged_at=logged_at,
+                        if logged_at is not None:
+                            prev = first_at_by_user.get(username)
+                            if prev is None or logged_at < prev:
+                                first_at_by_user[username] = logged_at
+                            prev_last = last_at_by_user.get(username)
+                            if prev_last is None or logged_at > prev_last:
+                                last_at_by_user[username] = logged_at
+                        if TRAFFIC_EVENTS_ENABLED:
+                            log_events.append(
+                                TrafficEvent(
+                                    username=username,
+                                    bytes_in=in_bytes,
+                                    bytes_out=out_bytes,
+                                    logged_at=logged_at,
+                                )
                             )
-                        )
                         if protocol and session_key:
-                            seen_at = logged_at or datetime.now(timezone.utc)
+                            seen_at = logged_at or now_dt
                             session_updates.append(
                                 (username, protocol, session_key, client_ip or "", seen_at)
                             )
@@ -1982,20 +2199,10 @@ def traffic_worker(stop_event: threading.Event) -> None:
                     if log_events:
                         session.add_all(log_events)
 
-                    first_at_by_user: dict[str, datetime] = {}
-                    last_at_by_user: dict[str, datetime] = {}
-                    for ev in log_events:
-                        if ev.logged_at is None:
-                            continue
-                        prev = first_at_by_user.get(ev.username)
-                        if prev is None or ev.logged_at < prev:
-                            first_at_by_user[ev.username] = ev.logged_at
-                        prev_last = last_at_by_user.get(ev.username)
-                        if prev_last is None or ev.logged_at > prev_last:
-                            last_at_by_user[ev.username] = ev.logged_at
-
                     if pending:
-                        users = session.scalars(select(ProxyUser).where(ProxyUser.username.in_(list(pending.keys())))).all()
+                        users = session.scalars(
+                            select(ProxyUser).where(ProxyUser.username.in_(list(pending.keys())))
+                        ).all()
                         for user in users:
                             req_count, traffic_in, traffic_out = pending[user.username]
                             if req_count or traffic_in or traffic_out:
@@ -2009,54 +2216,61 @@ def traffic_worker(stop_event: threading.Event) -> None:
                             user.traffic_bytes += traffic_in + traffic_out
 
                     upsert_proxy_sessions(session, session_updates)
-                    poll_mtproto_stats(session)
-                    refresh_proxy_connection_counts(session, datetime.now(timezone.utc))
+                    if do_mtproto:
+                        poll_mtproto_stats(session)
+                        last_mtproto_poll = now_mono
+                    if do_connections:
+                        refresh_proxy_connection_counts(session, now_dt)
+                        last_connection_stats = now_mono
 
-                    now_ts = int(datetime.now(timezone.utc).timestamp())
+                    now_ts = int(now_dt.timestamp())
                     if state.last_sample_ts == 0 or now_ts - state.last_sample_ts >= TRAFFIC_SAMPLING_INTERVAL_SECONDS:
-                        sample_traffic(session, datetime.now(timezone.utc))
+                        sample_traffic(session, now_dt)
                         state.last_sample_ts = now_ts
 
                     prune_tick += 1
-                    if prune_tick >= 200:
+                    if prune_tick >= 50:
                         prune_tick = 0
-                        maybe_prune_traffic_events(session)
-                        maybe_prune_traffic_samples(session)
+                        pruned_events = maybe_prune_traffic_events(session)
+                        pruned_samples = maybe_prune_traffic_samples(session)
+                        if pruned_events or pruned_samples:
+                            session.commit()
+                            maybe_sqlite_vacuum_if_needed()
 
                     session.commit()
 
                     should_resync = bool(pending) or (
-                        time.monotonic() - last_access_sync >= ACCESS_RESYNC_INTERVAL_SECONDS
+                        now_mono - last_access_sync >= ACCESS_RESYNC_INTERVAL_SECONDS
                     )
                     if should_resync:
-                        last_access_sync = time.monotonic()
+                        last_access_sync = now_mono
                         with SessionLocal() as sync_session:
                             sync_proxy_config(sync_session)
         except Exception:
-            # Worker must survive temporary file/db errors.
-            pass
+            # Worker must survive temporary file/db errors — but log so freezes are visible.
+            logging.getLogger("traffic_worker").exception("traffic_worker iteration failed")
         stop_event.wait(TRAFFIC_POLL_INTERVAL_SECONDS)
 
 
-def validate_protocol_selection(allow_http: bool, allow_socks5: bool) -> None:
-    if not allow_http and not allow_socks5:
+def validate_protocol_selection(allow_http: bool) -> None:
+    if not allow_http:
         raise HTTPException(status_code=400, detail="At least one protocol must be enabled")
 
 
-def _protocol_ok_extended(allow_http: bool, allow_socks5: bool, allow_mtproto: bool) -> None:
-    if not allow_http and not allow_socks5 and not allow_mtproto:
+def _protocol_ok_extended(allow_http: bool, allow_mtproto: bool) -> None:
+    if not allow_http and not allow_mtproto:
         raise ValueError("At least one protocol must be enabled")
 
 
-def validate_protocol_selection_extended(allow_http: bool, allow_socks5: bool, allow_mtproto: bool) -> None:
+def validate_protocol_selection_extended(allow_http: bool, allow_mtproto: bool) -> None:
     try:
-        _protocol_ok_extended(allow_http, allow_socks5, allow_mtproto)
+        _protocol_ok_extended(allow_http, allow_mtproto)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 def _prepare_user_row_for_create(payload: UserCreate, db: Session) -> tuple[ProxyUser, bool]:
-    _protocol_ok_extended(payload.allow_http, payload.allow_socks5, payload.allow_mtproto)
+    _protocol_ok_extended(payload.allow_http, payload.allow_mtproto)
     if payload.expires_at is not None:
         exp = payload.expires_at
         if exp.tzinfo is None:
@@ -2079,7 +2293,7 @@ def _prepare_user_row_for_create(payload: UserCreate, db: Session) -> tuple[Prox
         username=payload.username,
         password=final_password,
         allow_http=payload.allow_http,
-        allow_socks5=payload.allow_socks5,
+        allow_socks5=False,
         allow_mtproto=payload.allow_mtproto,
         mtproto_secret=generate_mtproto_secret() if payload.allow_mtproto else None,
         mtproto_ad_enabled=ad_enabled,
@@ -2170,7 +2384,6 @@ def _row_to_user_create(cols: dict[str, int], row: list[str]) -> UserCreate:
     password: str | None = pw_raw if pw_raw else None
 
     allow_http = _parse_import_bool_cell(cell("allow_http"), True) if "allow_http" in cols else True
-    allow_socks5 = _parse_import_bool_cell(cell("allow_socks5"), True) if "allow_socks5" in cols else True
     allow_mtproto = _parse_import_bool_cell(cell("allow_mtproto"), False) if "allow_mtproto" in cols else False
 
     expires_at: datetime | None = None
@@ -2185,7 +2398,6 @@ def _row_to_user_create(cols: dict[str, int], row: list[str]) -> UserCreate:
         username=username,
         password=password,
         allow_http=allow_http,
-        allow_socks5=allow_socks5,
         allow_mtproto=allow_mtproto,
         expires_at=expires_at,
         traffic_limit_bytes=traffic_limit_bytes,
@@ -2266,11 +2478,314 @@ def decode_session_cookie(cookie_value: str | None) -> str | None:
     return str(payload.get("u", ""))
 
 
+def _load_panel_operators() -> dict[str, dict]:
+    """Operators from /data/panel_operators.json. Keys are lowercase usernames."""
+    global _operators_cache
+    now = time.time()
+    if _operators_cache and (now - _operators_cache[0]) < _OPERATORS_TTL:
+        return _operators_cache[1]
+    result: dict[str, dict] = {}
+    try:
+        if PANEL_OPERATORS_FILE.is_file():
+            raw = json.loads(PANEL_OPERATORS_FILE.read_text(encoding="utf-8"))
+            items = raw if isinstance(raw, list) else raw.get("operators", []) if isinstance(raw, dict) else []
+            for item in items or []:
+                if not isinstance(item, dict):
+                    continue
+                username = str(item.get("username") or "").strip()
+                password = str(item.get("password") or "")
+                prefix = str(item.get("username_prefix") or item.get("prefix") or "").strip()
+                if not username or not password or not prefix:
+                    continue
+                if username.lower() == ADMIN_USERNAME.lower():
+                    logging.getLogger("proxy.panel").warning(
+                        "Ignoring operator %r: conflicts with ADMIN_USERNAME", username
+                    )
+                    continue
+                result[username.lower()] = {
+                    "username": username,
+                    "password": password,
+                    "username_prefix": prefix,
+                }
+    except (OSError, json.JSONDecodeError) as exc:
+        logging.getLogger("proxy.panel").warning("Failed to load panel operators: %s", exc)
+    _operators_cache = (now, result)
+    return result
+
+
+def _invalidate_operators_cache() -> None:
+    global _operators_cache
+    _operators_cache = None
+
+
+def _save_panel_operators(operators: dict[str, dict]) -> None:
+    """Persist operators dict (lowercase keys) as a JSON list."""
+    items = [
+        {
+            "username": op["username"],
+            "password": op["password"],
+            "username_prefix": op["username_prefix"],
+        }
+        for _, op in sorted(operators.items(), key=lambda kv: kv[1]["username"].lower())
+    ]
+    PANEL_OPERATORS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = PANEL_OPERATORS_FILE.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(items, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp_path, PANEL_OPERATORS_FILE)
+    try:
+        os.chmod(PANEL_OPERATORS_FILE, 0o600)
+    except OSError:
+        pass
+    _invalidate_operators_cache()
+
+
+def _operator_to_out(op: dict) -> PanelOperatorOut:
+    return PanelOperatorOut(
+        username=op["username"],
+        username_prefix=op["username_prefix"],
+        password=op["password"],
+    )
+
+
+def _find_operator(username: str) -> dict | None:
+    return _load_panel_operators().get((username or "").strip().lower())
+
+
+def is_panel_admin(username: str) -> bool:
+    return (username or "").strip() == ADMIN_USERNAME
+
+
+def auth_username_prefix(username: str) -> str | None:
+    if is_panel_admin(username):
+        return None
+    op = _find_operator(username)
+    return str(op["username_prefix"]) if op else None
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _username_prefix_filter(prefix: str):
+    return ProxyUser.username.like(f"{_escape_like(prefix)}%", escape="\\")
+
+
+def username_in_scope(auth_username: str, proxy_username: str) -> bool:
+    prefix = auth_username_prefix(auth_username)
+    if not prefix:
+        return True
+    return (proxy_username or "").startswith(prefix)
+
+
+def apply_scope_to_username(auth_username: str, proxy_username: str) -> str:
+    """For scoped operators, force username into their template prefix."""
+    prefix = auth_username_prefix(auth_username)
+    name = (proxy_username or "").strip()
+    if not prefix:
+        return name
+    if name.startswith(prefix):
+        return name
+    # Operator typed only the suffix (or forgot prefix) — attach template.
+    return f"{prefix}{name.lstrip('_')}"
+
+
+def assert_username_in_scope(auth_username: str, proxy_username: str) -> None:
+    if not username_in_scope(auth_username, proxy_username):
+        raise HTTPException(status_code=403, detail="Нет доступа к этому пользователю")
+
+
+def get_scoped_proxy_user(db: Session, user_id: int, auth_username: str) -> ProxyUser:
+    user = db.get(ProxyUser, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    assert_username_in_scope(auth_username, user.username)
+    return user
+
+
 def require_auth(request: Request) -> str:
     username = decode_session_cookie(request.cookies.get(SESSION_COOKIE_NAME))
-    if username != ADMIN_USERNAME:
+    if not username:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    if is_panel_admin(username):
+        return username
+    if _find_operator(username):
+        return username
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def require_admin(username: str = Depends(require_auth)) -> str:
+    if not is_panel_admin(username):
+        raise HTTPException(status_code=403, detail="Только для администратора")
     return username
+
+
+def _authenticate_panel_user(username: str, password: str) -> str | None:
+    username = (username or "").strip()
+    if not username:
+        return None
+    if username == ADMIN_USERNAME and hmac.compare_digest(password, ADMIN_PASSWORD):
+        return ADMIN_USERNAME
+    op = _find_operator(username)
+    if op and hmac.compare_digest(password, op["password"]):
+        return op["username"]
+    return None
+
+
+def auth_profile(username: str) -> dict:
+    prefix = auth_username_prefix(username)
+    return {
+        "authenticated": True,
+        "username": username,
+        "is_admin": is_panel_admin(username),
+        "username_prefix": prefix,
+    }
+
+
+def _telegram_send_message(text: str) -> None:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    payload: dict = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text[:3900],
+        "disable_web_page_preview": True,
+    }
+    if TELEGRAM_TOPIC_ID:
+        try:
+            payload["message_thread_id"] = int(TELEGRAM_TOPIC_ID)
+        except ValueError:
+            pass
+    body = json.dumps(payload).encode("utf-8")
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            resp.read()
+    except Exception as exc:
+        logging.getLogger("proxy.panel").warning("Telegram notify failed: %s", exc)
+
+
+def notify_panel_change(actor: str, action: str, details: str | None = None) -> None:
+    """Fire-and-forget audit log to Telegram topic."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    lines = [
+        "🛠 Proxy Admin — изменение",
+        f"Кто: {actor}",
+        f"Действие: {action}",
+    ]
+    if details:
+        lines.append(details.strip())
+    text = "\n".join(lines)
+    threading.Thread(target=_telegram_send_message, args=(text,), daemon=True).start()
+
+
+def _format_bool_ru(value: bool) -> str:
+    return "да" if value else "нет"
+
+
+def _summarize_user_update(before: ProxyUser, payload: UserUpdate) -> str:
+    patch = payload.model_dump(exclude_unset=True)
+    changes: list[str] = []
+    if "password" in patch and patch["password"] is not None:
+        changes.append("пароль изменён")
+    if "allow_http" in patch and patch["allow_http"] is not None and bool(patch["allow_http"]) != bool(before.allow_http):
+        changes.append(f"HTTP: {_format_bool_ru(before.allow_http)} → {_format_bool_ru(bool(patch['allow_http']))}")
+    if "allow_mtproto" in patch and patch["allow_mtproto"] is not None and bool(patch["allow_mtproto"]) != bool(before.allow_mtproto):
+        changes.append(
+            f"MTProto: {_format_bool_ru(before.allow_mtproto)} → {_format_bool_ru(bool(patch['allow_mtproto']))}"
+        )
+    if "expires_at" in patch:
+        old = before.expires_at.isoformat() if before.expires_at else "∞"
+        new = patch["expires_at"].isoformat() if patch["expires_at"] is not None else "∞"
+        if old != new:
+            changes.append(f"срок: {old} → {new}")
+    if "traffic_limit_bytes" in patch:
+        old = before.traffic_limit_bytes if before.traffic_limit_bytes is not None else "∞"
+        new = patch["traffic_limit_bytes"] if patch["traffic_limit_bytes"] is not None else "∞"
+        if old != new:
+            changes.append(f"лимит байт: {old} → {new}")
+    if patch.get("regenerate_mtproto_secret"):
+        changes.append("новый MTProto secret")
+    if any(k in patch for k in ("mtproto_ad_enabled", "mtproto_ad_channel", "mtproto_ad_tag")):
+        changes.append("настройки MTProto ads")
+    return ", ".join(changes) if changes else "без видимых изменений"
+
+
+def _parse_ip_networks(raw: str) -> list:
+    nets = []
+    for line in (raw or "").splitlines() or [raw or ""]:
+        # strip inline comments
+        if "#" in line:
+            line = line.split("#", 1)[0]
+        for part in re.split(r"[\s,;]+", line.strip()):
+            token = part.strip()
+            if not token:
+                continue
+            try:
+                if "/" in token:
+                    nets.append(ipaddress.ip_network(token, strict=False))
+                else:
+                    ip = ipaddress.ip_address(token)
+                    nets.append(ipaddress.ip_network(f"{ip}/{ip.max_prefixlen}", strict=False))
+            except ValueError:
+                logging.getLogger("proxy.panel").warning("Invalid PANEL_ALLOW_IPS entry ignored: %r", token)
+    return nets
+
+
+def _load_allow_networks() -> tuple:
+    global _allow_nets_cache
+    now = time.time()
+    if _allow_nets_cache and (now - _allow_nets_cache[0]) < _ALLOW_NETS_TTL:
+        return _allow_nets_cache[1]
+    nets: list = []
+    nets.extend(_parse_ip_networks(PANEL_ALLOW_IPS_RAW.replace(",", "\n")))
+    try:
+        if PANEL_ALLOW_IPS_FILE.is_file():
+            nets.extend(_parse_ip_networks(PANEL_ALLOW_IPS_FILE.read_text(encoding="utf-8")))
+    except OSError:
+        pass
+    # dedupe by string form
+    uniq = []
+    seen = set()
+    for n in nets:
+        key = str(n)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(n)
+    result = tuple(uniq)
+    _allow_nets_cache = (now, result)
+    return result
+
+
+def _client_ip(request: Request) -> str:
+    if PANEL_TRUST_X_FORWARDED_FOR:
+        xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        if xff:
+            try:
+                ipaddress.ip_address(xff)
+                return xff
+            except ValueError:
+                pass
+    if request.client and request.client.host:
+        return request.client.host
+    return ""
+
+
+def _ip_allowed(ip_str: str) -> bool:
+    nets = _load_allow_networks()
+    if not nets:
+        return True  # empty pool = no IP filter
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return any(ip in net for net in nets)
 
 
 def detect_public_ip() -> str | None:
@@ -2316,6 +2831,7 @@ def proxy_chain_delayed_resync_worker(delays_sec: tuple[float, ...] = (25.0, 55.
 async def lifespan(_app: FastAPI):
     global worker_thread
     init_db()
+    run_startup_db_maintenance()
     with SessionLocal() as session:
         normalize_mtproto_secrets(session)
         sync_proxy_config(session)
@@ -2331,6 +2847,27 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Proxy Admin Panel", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="/app/static"), name="static")
+
+
+@app.middleware("http")
+async def panel_ip_allowlist_middleware(request: Request, call_next):
+    # Healthcheck всегда с localhost контейнера — не режем.
+    if request.url.path == "/health":
+        return await call_next(request)
+    nets = _load_allow_networks()
+    if not nets:
+        return await call_next(request)
+    ip = _client_ip(request)
+    if not _ip_allowed(ip):
+        logging.getLogger("proxy.panel").warning(
+            "IP blocked: %s %s %s", ip, request.method, request.url.path
+        )
+        return Response(
+            content='{"detail":"Forbidden: IP not in allowlist"}',
+            status_code=403,
+            media_type="application/json",
+        )
+    return await call_next(request)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2350,11 +2887,74 @@ def health():
     return {"status": "ok", "revision": _read_panel_git_revision()}
 
 
+class AllowIpsUpdate(BaseModel):
+    entries: list[str] = Field(default_factory=list)
+
+
+@app.get("/api/allow-ips")
+def get_allow_ips(request: Request, _auth: str = Depends(require_admin)):
+    file_entries: list[str] = []
+    try:
+        if PANEL_ALLOW_IPS_FILE.is_file():
+            for line in PANEL_ALLOW_IPS_FILE.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if s and not s.startswith("#"):
+                    file_entries.append(s)
+    except OSError:
+        pass
+    env_entries = [str(n) for n in _parse_ip_networks(PANEL_ALLOW_IPS_RAW)]
+    effective = [str(n) for n in _load_allow_networks()]
+    return {
+        "enabled": bool(effective),
+        "client_ip": _client_ip(request),
+        "env": env_entries,
+        "file": file_entries,
+        "file_path": str(PANEL_ALLOW_IPS_FILE),
+        "effective": effective,
+        "trust_x_forwarded_for": PANEL_TRUST_X_FORWARDED_FOR,
+    }
+
+
+@app.put("/api/allow-ips")
+def put_allow_ips(payload: AllowIpsUpdate, _auth: str = Depends(require_admin)):
+    global _allow_nets_cache
+    cleaned: list[str] = []
+    for raw in payload.entries:
+        token = (raw or "").strip()
+        if not token or token.startswith("#"):
+            continue
+        try:
+            if "/" in token:
+                net = ipaddress.ip_network(token, strict=False)
+            else:
+                ip = ipaddress.ip_address(token)
+                net = ipaddress.ip_network(f"{ip}/{ip.max_prefixlen}", strict=False)
+            cleaned.append(str(net))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid entry {token!r}: {e}") from e
+    PANEL_ALLOW_IPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    body = "# panel IP allowlist — one IP or CIDR per line\n" + "\n".join(cleaned) + ("\n" if cleaned else "")
+    PANEL_ALLOW_IPS_FILE.write_text(body, encoding="utf-8")
+    _allow_nets_cache = None
+    notify_panel_change(
+        _auth,
+        "обновлён IP allowlist панели",
+        f"записей: {len(cleaned)}\n" + (", ".join(cleaned[:20]) if cleaned else "(пусто)"),
+    )
+    return {
+        "ok": True,
+        "file": cleaned,
+        "effective": [str(n) for n in _load_allow_networks()],
+        "enabled": bool(_load_allow_networks()),
+    }
+
+
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, response: Response):
-    if payload.username != ADMIN_USERNAME or not hmac.compare_digest(payload.password, ADMIN_PASSWORD):
+    authed = _authenticate_panel_user(payload.username, payload.password)
+    if not authed:
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    cookie_value = make_session_cookie(payload.username)
+    cookie_value = make_session_cookie(authed)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=cookie_value,
@@ -2364,7 +2964,7 @@ def login(payload: LoginRequest, response: Response):
         max_age=SESSION_TTL_SECONDS,
         path="/",
     )
-    return {"status": "ok"}
+    return {"status": "ok", **auth_profile(authed)}
 
 
 @app.post("/api/auth/logout")
@@ -2375,7 +2975,86 @@ def logout(response: Response, _auth: str = Depends(require_auth)):
 
 @app.get("/api/auth/me")
 def auth_me(_auth: str = Depends(require_auth)):
-    return {"authenticated": True, "username": ADMIN_USERNAME}
+    return auth_profile(_auth)
+
+
+@app.get("/api/operators", response_model=list[PanelOperatorOut])
+def list_operators(_auth: str = Depends(require_admin)):
+    ops = _load_panel_operators()
+    return [_operator_to_out(op) for _, op in sorted(ops.items(), key=lambda kv: kv[1]["username"].lower())]
+
+
+@app.post("/api/operators", response_model=PanelOperatorOut)
+def create_operator(payload: PanelOperatorCreate, _auth: str = Depends(require_admin)):
+    username = payload.username
+    if username.lower() == ADMIN_USERNAME.lower():
+        raise HTTPException(status_code=400, detail="Нельзя создать оператора с логином администратора")
+    ops = dict(_load_panel_operators())
+    if username.lower() in ops:
+        raise HTTPException(status_code=409, detail="Оператор уже существует")
+    password = payload.password or secrets.token_urlsafe(12)
+    ops[username.lower()] = {
+        "username": username,
+        "password": password,
+        "username_prefix": payload.username_prefix,
+    }
+    try:
+        _save_panel_operators(ops)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось сохранить операторов: {exc}") from exc
+    created = ops[username.lower()]
+    notify_panel_change(
+        _auth,
+        "создан оператор панели",
+        f"login: {created['username']}\nprefix: {created['username_prefix']}\npassword: {created['password']}",
+    )
+    return _operator_to_out(created)
+
+
+@app.put("/api/operators/{username}", response_model=PanelOperatorOut)
+def update_operator(username: str, payload: PanelOperatorUpdate, _auth: str = Depends(require_admin)):
+    key = (username or "").strip().lower()
+    ops = dict(_load_panel_operators())
+    op = ops.get(key)
+    if not op:
+        raise HTTPException(status_code=404, detail="Оператор не найден")
+    patch = payload.model_dump(exclude_unset=True)
+    changes: list[str] = []
+    if "password" in patch and patch["password"] is not None:
+        op["password"] = patch["password"]
+        changes.append(f"пароль: {patch['password']}")
+    if "username_prefix" in patch and patch["username_prefix"] is not None:
+        old_prefix = op["username_prefix"]
+        op["username_prefix"] = patch["username_prefix"]
+        changes.append(f"prefix: {old_prefix} → {patch['username_prefix']}")
+    if not changes:
+        raise HTTPException(status_code=400, detail="Нечего обновлять")
+    ops[key] = op
+    try:
+        _save_panel_operators(ops)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось сохранить операторов: {exc}") from exc
+    notify_panel_change(_auth, "изменён оператор панели", f"login: {op['username']}\n" + "\n".join(changes))
+    return _operator_to_out(op)
+
+
+@app.delete("/api/operators/{username}")
+def delete_operator(username: str, _auth: str = Depends(require_admin)):
+    key = (username or "").strip().lower()
+    ops = dict(_load_panel_operators())
+    if key not in ops:
+        raise HTTPException(status_code=404, detail="Оператор не найден")
+    removed = ops.pop(key)
+    try:
+        _save_panel_operators(ops)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось сохранить операторов: {exc}") from exc
+    notify_panel_change(
+        _auth,
+        "удалён оператор панели",
+        f"login: {removed['username']}\nprefix: {removed['username_prefix']}",
+    )
+    return {"status": "deleted", "username": username}
 
 
 @app.get("/api/meta")
@@ -2395,7 +3074,6 @@ def meta(request: Request, _auth: str = Depends(require_auth)):
         "proxy_public_host": host_value,
         "proxy_public_mtproto_host": mtproto_host,
         "proxy_public_http_port": PROXY_PUBLIC_HTTP_PORT,
-        "proxy_public_socks_port": PROXY_PUBLIC_SOCKS_PORT,
         "proxy_public_mtproto_port": MTPROTO_PUBLIC_PORT,
         "vless_active": vless_active,
         "vless_clients_chained": vless_clients_chained_flag,
@@ -2418,7 +3096,7 @@ def get_vless_settings(_auth: str = Depends(require_auth), db: Session = Depends
 @app.put("/api/settings/vless", response_model=VlessSettingsOut)
 def put_vless_settings(
     payload: VlessSettingsUpdate,
-    _auth: str = Depends(require_auth),
+    _auth: str = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     s = get_panel_settings(db)
@@ -2451,6 +3129,13 @@ def put_vless_settings(
             db.refresh(s)
         # После перезапуска обязательно пересобираем цепочки и gate-логику.
         sync_proxy_config(db)
+    if changed:
+        notify_panel_change(
+            _auth,
+            "изменены настройки VLESS",
+            f"enabled: {_format_bool_ru(old_enabled)} → {_format_bool_ru(bool(s.vless_enabled))}\n"
+            f"link: {'задан' if s.vless_link else 'пустой'}",
+        )
     return VlessSettingsOut(
         vless_enabled=s.vless_enabled,
         vless_link=s.vless_link,
@@ -2461,7 +3146,7 @@ def put_vless_settings(
 
 
 @app.post("/api/settings/vless/restart-done", response_model=VlessSettingsOut)
-def vless_singbox_restart_done(_auth: str = Depends(require_auth), db: Session = Depends(get_db)):
+def vless_singbox_restart_done(_auth: str = Depends(require_admin), db: Session = Depends(get_db)):
     """Fallback-кнопка: вручную триггернуть авто-рестарт сервисов VLESS и пересборку цепочки."""
     s = get_panel_settings(db)
     if not s.vless_enabled:
@@ -2496,10 +3181,15 @@ def list_users(
     if per_page > 20:
         per_page = 20
     q_clean = q.strip()
+    scope_prefix = auth_username_prefix(_auth)
     now = datetime.now(timezone.utc)
     online_usernames = fetch_online_usernames(db, now)
     stmt = select(ProxyUser).order_by(*users_list_order_clauses(sort_by, sort_dir, now=now))
     count_stmt = select(func.count()).select_from(ProxyUser)
+    if scope_prefix:
+        scope_filt = _username_prefix_filter(scope_prefix)
+        stmt = stmt.where(scope_filt)
+        count_stmt = count_stmt.where(scope_filt)
     if q_clean:
         esc = q_clean.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{esc}%"
@@ -2508,14 +3198,14 @@ def list_users(
         count_stmt = count_stmt.where(filt)
     total = int(db.scalar(count_stmt) or 0)
     if online_usernames:
-        online_total = int(
-            db.scalar(
-                select(func.count())
-                .select_from(ProxyUser)
-                .where(ProxyUser.username.in_(sorted(online_usernames)))
-            )
-            or 0
+        online_stmt = (
+            select(func.count())
+            .select_from(ProxyUser)
+            .where(ProxyUser.username.in_(sorted(online_usernames)))
         )
+        if scope_prefix:
+            online_stmt = online_stmt.where(_username_prefix_filter(scope_prefix))
+        online_total = int(db.scalar(online_stmt) or 0)
     else:
         online_total = 0
     total_pages = max(1, (total + per_page - 1) // per_page) if total else 1
@@ -2543,10 +3233,15 @@ def list_connections(
     db: Session = Depends(get_db),
 ):
     q_clean = q.strip()
+    scope_prefix = auth_username_prefix(_auth)
     now = datetime.now(timezone.utc)
     online_usernames = fetch_online_usernames(db, now)
     stmt = select(ProxyUser).order_by(*connections_list_order_clauses(sort_by, sort_dir, now=now))
     count_stmt = select(func.count()).select_from(ProxyUser)
+    if scope_prefix:
+        scope_filt = _username_prefix_filter(scope_prefix)
+        stmt = stmt.where(scope_filt)
+        count_stmt = count_stmt.where(scope_filt)
     if q_clean:
         esc = q_clean.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{esc}%"
@@ -2560,7 +3255,7 @@ def list_connections(
     offset = (page - 1) * per_page
     users = db.scalars(stmt.offset(offset).limit(per_page)).all()
     return ConnectionsPageOut(
-        totals=aggregate_connection_totals(db),
+        totals=aggregate_connection_totals(db, username_prefix=scope_prefix),
         items=[
             connection_user_to_out(u, now=now, is_online=(u.username in online_usernames)) for u in users
         ],
@@ -2572,7 +3267,11 @@ def list_connections(
 
 @app.get("/api/users/chart-options", response_model=list[UserChartOptionOut])
 def list_users_chart_options(_auth: str = Depends(require_auth), db: Session = Depends(get_db)):
-    rows = db.execute(select(ProxyUser.id, ProxyUser.username).order_by(ProxyUser.id.asc())).all()
+    stmt = select(ProxyUser.id, ProxyUser.username).order_by(ProxyUser.id.asc())
+    scope_prefix = auth_username_prefix(_auth)
+    if scope_prefix:
+        stmt = stmt.where(_username_prefix_filter(scope_prefix))
+    rows = db.execute(stmt).all()
     return [UserChartOptionOut(id=i, username=username) for i, username in rows]
 
 
@@ -2603,13 +3302,6 @@ def _user_http_proxy_url(host: str, username: str, password: str) -> str:
     return f"http://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{PROXY_PUBLIC_HTTP_PORT}"
 
 
-def _user_tg_socks_link(host: str, username: str, password: str) -> str:
-    return (
-        f"tg://socks?server={quote(host)}&port={quote(str(PROXY_PUBLIC_SOCKS_PORT))}"
-        f"&user={quote(username)}&pass={quote(password)}"
-    )
-
-
 def _user_tg_mtproto_link(mtproto_host: str, secret: str) -> str:
     return (
         f"tg://proxy?server={quote(mtproto_host)}&port={quote(str(MTPROTO_PUBLIC_PORT))}"
@@ -2619,7 +3311,11 @@ def _user_tg_mtproto_link(mtproto_host: str, secret: str) -> str:
 
 @app.get("/api/users/report")
 def export_users_report(_auth: str = Depends(require_auth), db: Session = Depends(get_db)):
-    users = db.scalars(select(ProxyUser).order_by(ProxyUser.id.asc())).all()
+    stmt = select(ProxyUser).order_by(ProxyUser.id.asc())
+    scope_prefix = auth_username_prefix(_auth)
+    if scope_prefix:
+        stmt = stmt.where(_username_prefix_filter(scope_prefix))
+    users = db.scalars(stmt).all()
     now = datetime.now(timezone.utc)
     online_usernames = fetch_online_usernames(db, now)
     buffer = io.StringIO()
@@ -2630,14 +3326,12 @@ def export_users_report(_auth: str = Depends(require_auth), db: Session = Depend
             "Логин",
             "Пароль",
             "HTTP",
-            "SOCKS5",
             "MTProto",
             "Входящий_ГБ",
             "Исходящий_ГБ",
             "Всего_ГБ",
             "Запросов",
             "Подключ_HTTP",
-            "Подключ_SOCKS5",
             "Подключ_MTProto",
             "Подключ_всего",
             "Онлайн",
@@ -2656,16 +3350,13 @@ def export_users_report(_auth: str = Depends(require_auth), db: Session = Depend
                 row.username,
                 row.password,
                 "да" if row.allow_http else "нет",
-                "да" if row.allow_socks5 else "нет",
                 "да" if row.allow_mtproto else "нет",
                 _bytes_to_gib_str(row.traffic_in_bytes),
                 _bytes_to_gib_str(row.traffic_out_bytes),
                 _bytes_to_gib_str(row.traffic_bytes),
                 row.requests_count,
                 row.connections_http,
-                row.connections_socks5,
                 _format_protocol_connections_label(row.connections_http, row.connections_http_ips),
-                _format_protocol_connections_label(row.connections_socks5, row.connections_socks5_ips),
                 _format_protocol_connections_label(row.connections_mtproto, row.connections_mtproto_ips),
                 _format_protocol_connections_label(row.connections_total, row.connections_total_ips),
                 "да" if row.is_online else "нет",
@@ -2694,7 +3385,11 @@ def export_users_report_with_links(
 ):
     """Тот же отчёт, что /api/users/report, плюс колонки с готовыми ссылками (как в панели)."""
     host_value, mtproto_host = _client_public_hosts(request)
-    users = db.scalars(select(ProxyUser).order_by(ProxyUser.id.asc())).all()
+    stmt = select(ProxyUser).order_by(ProxyUser.id.asc())
+    scope_prefix = auth_username_prefix(_auth)
+    if scope_prefix:
+        stmt = stmt.where(_username_prefix_filter(scope_prefix))
+    users = db.scalars(stmt).all()
     now = datetime.now(timezone.utc)
     online_usernames = fetch_online_usernames(db, now)
     buffer = io.StringIO()
@@ -2705,14 +3400,12 @@ def export_users_report_with_links(
             "Логин",
             "Пароль",
             "HTTP",
-            "SOCKS5",
             "MTProto",
             "Входящий_ГБ",
             "Исходящий_ГБ",
             "Всего_ГБ",
             "Запросов",
             "Подключ_HTTP",
-            "Подключ_SOCKS5",
             "Подключ_MTProto",
             "Подключ_всего",
             "Онлайн",
@@ -2722,20 +3415,16 @@ def export_users_report_with_links(
             "Лимит_ГБ",
             "Доступ",
             "HTTP_ссылка",
-            "TG_SOCKS5_ссылка",
             "TG_MTProto_ссылка",
         ]
     )
     for u in users:
         row = user_to_out(u, now=now, is_online=(u.username in online_usernames))
         http_link = ""
-        tg_socks = ""
         tg_mt = ""
         if row.access_allowed:
             if u.allow_http:
                 http_link = _user_http_proxy_url(host_value, u.username, u.password)
-            if u.allow_socks5:
-                tg_socks = _user_tg_socks_link(host_value, u.username, u.password)
             if u.allow_mtproto and u.mtproto_secret:
                 tg_mt = _user_tg_mtproto_link(mtproto_host, u.mtproto_secret)
         writer.writerow(
@@ -2744,16 +3433,13 @@ def export_users_report_with_links(
                 row.username,
                 row.password,
                 "да" if row.allow_http else "нет",
-                "да" if row.allow_socks5 else "нет",
                 "да" if row.allow_mtproto else "нет",
                 _bytes_to_gib_str(row.traffic_in_bytes),
                 _bytes_to_gib_str(row.traffic_out_bytes),
                 _bytes_to_gib_str(row.traffic_bytes),
                 row.requests_count,
                 row.connections_http,
-                row.connections_socks5,
                 _format_protocol_connections_label(row.connections_http, row.connections_http_ips),
-                _format_protocol_connections_label(row.connections_socks5, row.connections_socks5_ips),
                 _format_protocol_connections_label(row.connections_mtproto, row.connections_mtproto_ips),
                 _format_protocol_connections_label(row.connections_total, row.connections_total_ips),
                 "да" if row.is_online else "нет",
@@ -2763,7 +3449,6 @@ def export_users_report_with_links(
                 _bytes_to_gib_str(row.traffic_limit_bytes),
                 "да" if row.access_allowed else "нет",
                 http_link,
-                tg_socks,
                 tg_mt,
             ]
         )
@@ -2779,6 +3464,13 @@ def export_users_report_with_links(
 
 @app.post("/api/users", response_model=UserCreatedOut)
 def create_user(payload: UserCreate, _auth: str = Depends(require_auth), db: Session = Depends(get_db)):
+    scoped_username = apply_scope_to_username(_auth, payload.username)
+    if not scoped_username or len(scoped_username) < 3:
+        raise HTTPException(status_code=400, detail="Username too short")
+    if len(scoped_username) > 64:
+        raise HTTPException(status_code=400, detail="Username too long")
+    assert_username_in_scope(_auth, scoped_username)
+    payload = payload.model_copy(update={"username": scoped_username})
     try:
         user, password_generated = _prepare_user_row_for_create(payload, db)
     except ValueError as e:
@@ -2791,6 +3483,14 @@ def create_user(payload: UserCreate, _auth: str = Depends(require_auth), db: Ses
     db.refresh(user)
     sync_proxy_config(db)
     base = user_to_out(user)
+    notify_panel_change(
+        _auth,
+        "создан proxy-пользователь",
+        f"user: {user.username}\n"
+        f"HTTP: {_format_bool_ru(user.allow_http)} · MTProto: {_format_bool_ru(user.allow_mtproto)}\n"
+        f"пароль: {user.password}"
+        + (" (сгенерирован)" if password_generated else ""),
+    )
     return UserCreatedOut(**base.model_dump(), password_generated=password_generated)
 
 
@@ -2836,6 +3536,7 @@ async def import_users_csv(
 
     results: list[ImportUserResult] = []
     errors: list[ImportRowError] = []
+    scope_prefix = auth_username_prefix(_auth)
     taken_usernames = {
         u for u in db.scalars(select(ProxyUser.username)).all() if isinstance(u, str) and u
     }
@@ -2846,7 +3547,11 @@ async def import_users_csv(
         try:
             payload = _row_to_user_create(col_map, row)
             normalized_username = _normalize_import_username(payload.username)
+            if scope_prefix and not normalized_username.startswith(scope_prefix):
+                normalized_username = apply_scope_to_username(_auth, normalized_username)
             unique_username = _make_unique_import_username(normalized_username, taken_usernames)
+            if scope_prefix and not unique_username.startswith(scope_prefix):
+                raise ValueError(f"логин должен начинаться с {scope_prefix!r}")
             payload = payload.model_copy(update={"username": unique_username})
             user, password_generated = _prepare_user_row_for_create(payload, db)
         except ValueError as e:
@@ -2872,26 +3577,28 @@ async def import_users_csv(
     db.commit()
     sync_proxy_config(db)
 
+    notify_panel_change(
+        _auth,
+        "импорт пользователей CSV",
+        f"создано: {len(results)}\nошибок: {len(errors)}",
+    )
     return ImportUsersOut(created=len(results), errors=errors, results=results)
 
 
 @app.put("/api/users/{user_id}", response_model=UserOut)
 def update_user(user_id: int, payload: UserUpdate, _auth: str = Depends(require_auth), db: Session = Depends(get_db)):
-    user = db.get(ProxyUser, user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = get_scoped_proxy_user(db, user_id, _auth)
+    change_summary = _summarize_user_update(user, payload)
 
     new_http = payload.allow_http if payload.allow_http is not None else user.allow_http
-    new_socks = payload.allow_socks5 if payload.allow_socks5 is not None else user.allow_socks5
     new_mtproto = payload.allow_mtproto if payload.allow_mtproto is not None else user.allow_mtproto
-    validate_protocol_selection_extended(new_http, new_socks, new_mtproto)
+    validate_protocol_selection_extended(new_http, new_mtproto)
 
     if payload.password is not None:
         user.password = payload.password
     if payload.allow_http is not None:
         user.allow_http = payload.allow_http
-    if payload.allow_socks5 is not None:
-        user.allow_socks5 = payload.allow_socks5
+    user.allow_socks5 = False
     if payload.allow_mtproto is not None:
         user.allow_mtproto = payload.allow_mtproto
         if user.allow_mtproto:
@@ -2942,23 +3649,29 @@ def update_user(user_id: int, payload: UserUpdate, _auth: str = Depends(require_
     db.commit()
     db.refresh(user)
     sync_proxy_config(db)
+    notify_panel_change(
+        _auth,
+        "изменён proxy-пользователь",
+        f"user: {user.username} (id {user.id})\n{change_summary}",
+    )
     return user_to_out(user)
 
 
 @app.delete("/api/users/{user_id}")
-def delete_user(user_id: int, _auth: str = Depends(require_auth), db: Session = Depends(get_db)):
-    user = db.get(ProxyUser, user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
+def delete_user(user_id: int, _auth: str = Depends(require_admin), db: Session = Depends(get_db)):
+    user = get_scoped_proxy_user(db, user_id, _auth)
+    uname = user.username
+    uid = user.id
     db.execute(delete(ProxyActiveSession).where(ProxyActiveSession.username == user.username))
     db.delete(user)
     db.commit()
     sync_proxy_config(db)
+    notify_panel_change(_auth, "удалён proxy-пользователь", f"user: {uname} (id {uid})")
     return {"status": "deleted"}
 
 
 @app.post("/api/backup")
-def backup_users(_auth: str = Depends(require_auth)):
+def backup_users(_auth: str = Depends(require_admin)):
     if _sqlite_database_path() is None:
         raise HTTPException(
             status_code=501,
@@ -2979,7 +3692,7 @@ def backup_users(_auth: str = Depends(require_auth)):
 
 
 @app.post("/api/restore")
-async def restore_users(file: UploadFile = File(...), _auth: str = Depends(require_auth)):
+async def restore_users(file: UploadFile = File(...), _auth: str = Depends(require_admin)):
     data = await file.read()
     if len(data) >= 15 and data.startswith(b"SQLite format 3"):
         dest = _sqlite_database_path()
@@ -3018,6 +3731,7 @@ async def restore_users(file: UploadFile = File(...), _auth: str = Depends(requi
         with SessionLocal() as session:
             normalize_mtproto_secrets(session)
             sync_proxy_config(session)
+        notify_panel_change(_auth, "restore БД", "формат: sqlite")
         return {"status": "restored", "format": "sqlite"}
 
     try:
@@ -3037,13 +3751,12 @@ async def restore_users(file: UploadFile = File(...), _auth: str = Depends(requi
             username = str(item.get("username", "")).strip()
             password = str(item.get("password", ""))
             allow_http = bool(item.get("allow_http", False))
-            allow_socks5 = bool(item.get("allow_socks5", False))
             allow_mtproto = bool(item.get("allow_mtproto", False))
             if not username or ":" in username or "|" in username or " " in username:
                 continue
             if ":" in password or "|" in password:
                 continue
-            if not allow_http and not allow_socks5 and not allow_mtproto:
+            if not allow_http and not allow_mtproto:
                 continue
             expires_raw = item.get("expires_at")
             expires_at = datetime.fromisoformat(str(expires_raw)) if expires_raw else None
@@ -3054,7 +3767,7 @@ async def restore_users(file: UploadFile = File(...), _auth: str = Depends(requi
                 username=username,
                 password=password,
                 allow_http=allow_http,
-                allow_socks5=allow_socks5,
+                allow_socks5=False,
                 allow_mtproto=allow_mtproto,
                 mtproto_secret=(
                     restore_mtproto_secret(
@@ -3104,32 +3817,38 @@ async def restore_users(file: UploadFile = File(...), _auth: str = Depends(requi
         db.commit()
     with SessionLocal() as session:
         sync_proxy_config(session)
+    notify_panel_change(_auth, "restore БД", "формат: json")
     return {"status": "restored", "format": "json"}
 
 
 @app.get("/api/traffic/summary", response_model=TrafficSummaryOut)
-def traffic_summary(_auth: str = Depends(require_auth), db: Session = Depends(get_db)):
+def traffic_summary(_auth: str = Depends(require_admin), db: Session = Depends(get_db)):
     """Суммарный трафик всех пользователей: за всё время и за текущий календарный месяц (UTC)."""
-    return build_traffic_summary(db)
+    return build_traffic_summary(db, username_prefix=auth_username_prefix(_auth))
 
 
 @app.get("/api/traffic/samples", response_model=list[TrafficSeriesPoint])
 def traffic_samples(
     user_id: int | None = None,
     minutes: int = 180,
-    _auth: str = Depends(require_auth),
+    _auth: str = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     minutes = max(10, min(minutes, 24 * 60))
     threshold = datetime.now(timezone.utc).timestamp() - minutes * 60
     threshold_dt = datetime.fromtimestamp(threshold, timezone.utc)
+    scope_prefix = auth_username_prefix(_auth)
     if user_id is None:
+        if scope_prefix:
+            # Global aggregate samples are admin-wide; scoped operators only see per-user charts.
+            return []
         rows = db.scalars(
             select(TrafficSample)
             .where(TrafficSample.user_id.is_(None), TrafficSample.captured_at >= threshold_dt)
             .order_by(TrafficSample.captured_at.asc())
         ).all()
     else:
+        get_scoped_proxy_user(db, user_id, _auth)
         rows = db.scalars(
             select(TrafficSample)
             .where(TrafficSample.user_id == user_id, TrafficSample.captured_at >= threshold_dt)

@@ -8,11 +8,16 @@ const usersBody = document.getElementById("usersTableBody");
 const createForm = document.getElementById("createUserForm");
 const usersTabBtn = document.getElementById("usersTabBtn");
 const vlessTabBtn = document.getElementById("vlessTabBtn");
+const operatorsTabBtn = document.getElementById("operatorsTabBtn");
 const analyticsTabBtn = document.getElementById("analyticsTabBtn");
 const connectionsTabBtn = document.getElementById("connectionsTabBtn");
 const usersSection = document.getElementById("usersSection");
 const trafficSummarySection = document.getElementById("trafficSummarySection");
 const usersTableSection = document.getElementById("usersTableSection");
+const operatorsSection = document.getElementById("operatorsSection");
+const operatorsTableBody = document.getElementById("operatorsTableBody");
+const createOperatorForm = document.getElementById("createOperatorForm");
+const navOperatorsBadge = document.getElementById("navOperatorsBadge");
 const onlineTotalBadge = document.getElementById("onlineTotalBadge");
 const liveRefreshBadge = document.getElementById("liveRefreshBadge");
 const summaryAllTimeIn = document.getElementById("summaryAllTimeIn");
@@ -23,6 +28,11 @@ const summaryMonthIn = document.getElementById("summaryMonthIn");
 const summaryMonthOut = document.getElementById("summaryMonthOut");
 const summaryMonthTotal = document.getElementById("summaryMonthTotal");
 const summaryFirstConnection = document.getElementById("summaryFirstConnection");
+const kpiUsersTotal = document.getElementById("kpiUsersTotal");
+const kpiOnlineNow = document.getElementById("kpiOnlineNow");
+const kpiVlessState = document.getElementById("kpiVlessState");
+const kpiVlessMeta = document.getElementById("kpiVlessMeta");
+const kpiPorts = document.getElementById("kpiPorts");
 const vlessSection = document.getElementById("vlessSection");
 const analyticsSection = document.getElementById("analyticsSection");
 const connectionsSection = document.getElementById("connectionsSection");
@@ -31,7 +41,6 @@ const connectionsSearchInput = document.getElementById("connectionsSearchInput")
 const connectionsUsersBadge = document.getElementById("connectionsUsersBadge");
 const connectionsLiveBadge = document.getElementById("connectionsLiveBadge");
 const connectionsTotalHttp = document.getElementById("connectionsTotalHttp");
-const connectionsTotalSocks = document.getElementById("connectionsTotalSocks");
 const connectionsTotalMtproto = document.getElementById("connectionsTotalMtproto");
 const connectionsTotalAll = document.getElementById("connectionsTotalAll");
 const connectionsPagination = document.getElementById("connectionsPagination");
@@ -54,11 +63,19 @@ const trafficChartCanvas = document.getElementById("trafficChart");
 const statIn = document.getElementById("statIn");
 const statOut = document.getElementById("statOut");
 const statTotal = document.getElementById("statTotal");
-const tgHostLabel = document.getElementById("tgHostLabel");
 const httpPortLabel = document.getElementById("httpPortLabel");
-const socksPortLabel = document.getElementById("socksPortLabel");
 const mtprotoPortLabel = document.getElementById("mtprotoPortLabel");
 const vlessBadge = document.getElementById("vlessBadge");
+const authUserLabel = document.getElementById("authUserLabel");
+const brandSubEl = document.getElementById("pageSubtitle") || document.querySelector(".brand-sub");
+const brandSubDefault = brandSubEl ? brandSubEl.textContent : "";
+const pageTitleEl = document.getElementById("pageTitle");
+const navUsersBadge = document.getElementById("navUsersBadge");
+const navOnlineBadge = document.getElementById("navOnlineBadge");
+const navVlessDot = document.getElementById("navVlessDot");
+const usernamePrefixAddon = document.getElementById("usernamePrefixAddon");
+const createUsernameInput = document.getElementById("createUsernameInput");
+let authState = { username: "", is_admin: true, username_prefix: null };
 const vlessForm = document.getElementById("vlessForm");
 const vlessEnabled = document.getElementById("vlessEnabled");
 const vlessLinkInput = document.getElementById("vlessLinkInput");
@@ -102,7 +119,6 @@ let panelMeta = {
   proxy_public_host: "127.0.0.1",
   proxy_public_mtproto_host: "127.0.0.1",
   proxy_public_http_port: 13128,
-  proxy_public_socks_port: 11080,
   proxy_public_mtproto_port: 2053,
   vless_active: false,
   vless_clients_chained: false,
@@ -125,8 +141,8 @@ let connectionsSortBy = "connections_total";
 let connectionsSortDir = "desc";
 let connectionsSearchDebounce = null;
 let connectionsRefreshInFlight = false;
-const LIVE_REFRESH_INTERVAL_MS = 3000;
-const CHART_REFRESH_INTERVAL_MS = 30000;
+const LIVE_REFRESH_INTERVAL_MS = 12000;
+const CHART_REFRESH_INTERVAL_MS = 60000;
 let usersRefreshInFlight = false;
 let liveRefreshTimer = null;
 let chartRefreshTimer = null;
@@ -235,7 +251,7 @@ function formatProtoCell(user) {
       ? "MTProto + реклама"
       : "MTProto"
     : "MTProto выкл.";
-  return `${chip("H", user.allow_http, user.allow_http ? "HTTP" : "HTTP выкл.")}${chip("S", user.allow_socks5, user.allow_socks5 ? "SOCKS5" : "SOCKS5 выкл.")}${chip("M", user.allow_mtproto, mtTitle)}`;
+  return `${chip("H", user.allow_http, user.allow_http ? "HTTP" : "HTTP выкл.")}${chip("M", user.allow_mtproto, mtTitle)}`;
 }
 
 function onlineStatusPillCompact(user) {
@@ -302,29 +318,69 @@ function formatTotalTrafficCellCompact(user) {
 }
 
 function closeAllRowMenus() {
-  document.querySelectorAll(".row-menu").forEach((menu) => menu.classList.add("hidden"));
+  document.querySelectorAll(".row-menu").forEach((menu) => {
+    menu.classList.add("hidden");
+    menu.classList.remove("is-open", "open-up");
+    menu.style.top = "";
+    menu.style.left = "";
+    menu.style.right = "";
+    menu.style.bottom = "";
+    const host = menu.dataset.hostId ? document.getElementById(menu.dataset.hostId) : null;
+    if (host && menu.parentElement !== host) {
+      host.appendChild(menu);
+    }
+  });
+}
+
+function positionRowMenu(menu, anchorBtn) {
+  const rect = anchorBtn.getBoundingClientRect();
+  const menuWidth = 248;
+  const gap = 8;
+  const viewportPad = 12;
+  document.body.appendChild(menu);
+  menu.classList.remove("hidden");
+  menu.classList.add("is-open");
+  const menuHeight = Math.min(menu.scrollHeight || 280, window.innerHeight - viewportPad * 2);
+  let left = rect.right - menuWidth;
+  left = Math.max(viewportPad, Math.min(left, window.innerWidth - menuWidth - viewportPad));
+  const spaceBelow = window.innerHeight - rect.bottom - gap;
+  const spaceAbove = rect.top - gap;
+  const openUp = spaceBelow < menuHeight && spaceAbove > spaceBelow;
+  menu.classList.toggle("open-up", openUp);
+  let top = openUp ? rect.top - gap - menuHeight : rect.bottom + gap;
+  top = Math.max(viewportPad, Math.min(top, window.innerHeight - menuHeight - viewportPad));
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.top = `${Math.round(top)}px`;
+  menu.style.right = "auto";
+  menu.style.bottom = "auto";
 }
 
 function userRowActionsMenuHtml(user) {
+  const hostId = `row-menu-host-${user.id}`;
+  const canDelete = authState.is_admin !== false;
   return `
-    <div class="menu-wrap row-actions-menu">
-      <button type="button" class="btn btn-secondary btn-compact row-menu-btn" aria-label="Действия для ${user.username}">⋯</button>
-      <div class="menu row-menu hidden">
-        <button type="button" class="menu-item-btn" data-action="toggle-http">${user.allow_http ? "Выключить HTTP" : "Включить HTTP"}</button>
-        <button type="button" class="menu-item-btn" data-action="toggle-socks">${user.allow_socks5 ? "Выключить SOCKS5" : "Включить SOCKS5"}</button>
-        <button type="button" class="menu-item-btn" data-action="toggle-mtproto">${user.allow_mtproto ? "Выключить MTProto" : "Включить MTProto"}</button>
-        <button type="button" class="menu-item-btn" data-action="limits">Срок и лимит…</button>
-        <button type="button" class="menu-item-btn" data-action="edit-mtproto">MTProto…</button>
-        <button type="button" class="menu-item-btn" data-action="http-creds">HTTP доступ</button>
-        <button type="button" class="menu-item-btn" data-action="copy-socks">TG SOCKS5</button>
-        <button type="button" class="menu-item-btn" data-action="copy-mtproto">TG MTProto</button>
-        <button type="button" class="menu-item-btn menu-item-danger" data-action="delete">Удалить</button>
+    <div class="menu-wrap row-actions-menu" id="${hostId}">
+      <button type="button" class="btn btn-secondary btn-compact row-menu-btn" aria-label="Действия для ${user.username}" aria-haspopup="menu">⋯</button>
+      <div class="menu row-menu hidden" role="menu" data-host-id="${hostId}">
+        <div class="menu-section-label">Протоколы</div>
+        <button type="button" class="menu-item-btn" data-action="toggle-http" role="menuitem">${user.allow_http ? "Выключить HTTP" : "Включить HTTP"}</button>
+        <button type="button" class="menu-item-btn" data-action="toggle-mtproto" role="menuitem">${user.allow_mtproto ? "Выключить MTProto" : "Включить MTProto"}</button>
+        <div class="menu-section-label">Доступ</div>
+        <button type="button" class="menu-item-btn" data-action="limits" role="menuitem">Срок и лимиты…</button>
+        <button type="button" class="menu-item-btn" data-action="edit-mtproto" role="menuitem">Настройки MTProto…</button>
+        <button type="button" class="menu-item-btn" data-action="http-creds" role="menuitem">Показать HTTP доступ</button>
+        <button type="button" class="menu-item-btn" data-action="copy-mtproto" role="menuitem">Скопировать TG MTProto</button>
+        ${
+          canDelete
+            ? `<div class="menu-divider"></div>
+        <button type="button" class="menu-item-btn menu-item-danger" data-action="delete" role="menuitem">Удалить пользователя</button>`
+            : ""
+        }
       </div>
     </div>`;
 }
 
 function bindUserRowActions(tr, user) {
-  const tgLink = `tg://socks?server=${encodeURIComponent(panelMeta.proxy_public_host)}&port=${encodeURIComponent(String(panelMeta.proxy_public_socks_port))}&user=${encodeURIComponent(user.username)}&pass=${encodeURIComponent(user.password || "")}`;
   const mtprotoLink = `tg://proxy?server=${encodeURIComponent(panelMeta.proxy_public_mtproto_host || panelMeta.proxy_public_host)}&port=${encodeURIComponent(String(panelMeta.proxy_public_mtproto_port || 14443))}&secret=${encodeURIComponent(user.mtproto_secret || "")}`;
   const accessOk = user.access_allowed !== false;
   const menuBtn = tr.querySelector(".row-menu-btn");
@@ -334,17 +390,14 @@ function bindUserRowActions(tr, user) {
       event.stopPropagation();
       const wasOpen = !menu.classList.contains("hidden");
       closeAllRowMenus();
-      if (!wasOpen) menu.classList.remove("hidden");
+      if (!wasOpen) positionRowMenu(menu, menuBtn);
     });
+    menu.addEventListener("click", (event) => event.stopPropagation());
   }
   const closeMenu = () => closeAllRowMenus();
   tr.querySelector('[data-action="toggle-http"]')?.addEventListener("click", async () => {
     closeMenu();
     await updateUser(user.id, { allow_http: !user.allow_http });
-  });
-  tr.querySelector('[data-action="toggle-socks"]')?.addEventListener("click", async () => {
-    closeMenu();
-    await updateUser(user.id, { allow_socks5: !user.allow_socks5 });
   });
   tr.querySelector('[data-action="toggle-mtproto"]')?.addEventListener("click", async () => {
     closeMenu();
@@ -367,23 +420,6 @@ function bindUserRowActions(tr, user) {
       await loadUsers({ forceFullRender: true });
     } catch (e) {
       setStatus(e.message, true);
-    }
-  });
-  tr.querySelector('[data-action="copy-socks"]')?.addEventListener("click", async () => {
-    closeMenu();
-    if (!accessOk) {
-      setStatus("Доступ заблокирован (срок или лимит трафика)", true);
-      return;
-    }
-    if (!user.allow_socks5) {
-      setStatus("У пользователя выключен SOCKS5", true);
-      return;
-    }
-    const copied = await copyToClipboard(tgLink);
-    if (copied) {
-      setStatus(`SOCKS5 ссылка скопирована для ${user.username}`);
-    } else {
-      setStatus(`Скопируйте вручную: ${tgLink}`, true);
     }
   });
   tr.querySelector('[data-action="copy-mtproto"]')?.addEventListener("click", async () => {
@@ -453,72 +489,73 @@ function closeArchiveMenu() {
   archiveMenu.classList.add("hidden");
 }
 
-function showUsersTab() {
-  usersSection.classList.remove("hidden");
+function setPageHeader(title, subtitle) {
+  if (pageTitleEl) pageTitleEl.textContent = title;
+  if (brandSubEl && !authState.username_prefix) {
+    brandSubEl.textContent = subtitle;
+  } else if (brandSubEl && authState.username_prefix) {
+    brandSubEl.textContent = `Доступ только к шаблону ${authState.username_prefix}*`;
+  } else if (brandSubEl) {
+    brandSubEl.textContent = subtitle;
+  }
+}
+
+function clearMainTabs() {
+  usersSection.classList.add("hidden");
   if (trafficSummarySection) trafficSummarySection.classList.add("hidden");
-  usersTableSection.classList.remove("hidden");
+  usersTableSection.classList.add("hidden");
   vlessSection.classList.add("hidden");
+  if (operatorsSection) operatorsSection.classList.add("hidden");
   analyticsSection.classList.add("hidden");
   connectionsSection.classList.add("hidden");
-  usersTabBtn.classList.add("tab-active");
-  usersTabBtn.setAttribute("aria-selected", "true");
-  vlessTabBtn.classList.remove("tab-active");
-  vlessTabBtn.setAttribute("aria-selected", "false");
-  analyticsTabBtn.classList.remove("tab-active");
-  analyticsTabBtn.setAttribute("aria-selected", "false");
-  connectionsTabBtn.classList.remove("tab-active");
-  connectionsTabBtn.setAttribute("aria-selected", "false");
+  [usersTabBtn, vlessTabBtn, operatorsTabBtn, analyticsTabBtn, connectionsTabBtn].forEach((btn) => {
+    if (!btn) return;
+    btn.classList.remove("tab-active");
+    btn.setAttribute("aria-selected", "false");
+  });
+}
+
+function activateTab(btn) {
+  if (!btn) return;
+  btn.classList.add("tab-active");
+  btn.setAttribute("aria-selected", "true");
+}
+
+function showUsersTab() {
+  clearMainTabs();
+  usersSection.classList.remove("hidden");
+  usersTableSection.classList.remove("hidden");
+  activateTab(usersTabBtn);
+  setPageHeader("Пользователи", "Список, трафик и действия по прокси-аккаунтам");
 }
 
 function showVlessTab() {
-  usersSection.classList.add("hidden");
-  if (trafficSummarySection) trafficSummarySection.classList.add("hidden");
-  usersTableSection.classList.add("hidden");
+  clearMainTabs();
   vlessSection.classList.remove("hidden");
-  analyticsSection.classList.add("hidden");
-  connectionsSection.classList.add("hidden");
-  usersTabBtn.classList.remove("tab-active");
-  usersTabBtn.setAttribute("aria-selected", "false");
-  vlessTabBtn.classList.add("tab-active");
-  vlessTabBtn.setAttribute("aria-selected", "true");
-  analyticsTabBtn.classList.remove("tab-active");
-  analyticsTabBtn.setAttribute("aria-selected", "false");
-  connectionsTabBtn.classList.remove("tab-active");
-  connectionsTabBtn.setAttribute("aria-selected", "false");
+  activateTab(vlessTabBtn);
+  setPageHeader("VLESS", "Цепочка для HTTP и MTProto через sing-box");
+}
+
+function showOperatorsTab() {
+  clearMainTabs();
+  if (operatorsSection) operatorsSection.classList.remove("hidden");
+  activateTab(operatorsTabBtn);
+  setPageHeader("Операторы", "Управление входом в панель и шаблонами доступа");
 }
 
 function showAnalyticsTab() {
-  usersSection.classList.add("hidden");
+  clearMainTabs();
   if (trafficSummarySection) trafficSummarySection.classList.remove("hidden");
-  usersTableSection.classList.add("hidden");
-  vlessSection.classList.add("hidden");
   analyticsSection.classList.remove("hidden");
-  connectionsSection.classList.add("hidden");
-  analyticsTabBtn.classList.add("tab-active");
-  analyticsTabBtn.setAttribute("aria-selected", "true");
-  usersTabBtn.classList.remove("tab-active");
-  usersTabBtn.setAttribute("aria-selected", "false");
-  vlessTabBtn.classList.remove("tab-active");
-  vlessTabBtn.setAttribute("aria-selected", "false");
-  connectionsTabBtn.classList.remove("tab-active");
-  connectionsTabBtn.setAttribute("aria-selected", "false");
+  activateTab(analyticsTabBtn);
+  setPageHeader("Трафик", "Сводка и утилизация по выборкам");
 }
 
 function showConnectionsTab() {
-  usersSection.classList.add("hidden");
-  if (trafficSummarySection) trafficSummarySection.classList.add("hidden");
-  usersTableSection.classList.add("hidden");
-  vlessSection.classList.add("hidden");
-  analyticsSection.classList.add("hidden");
+  clearMainTabs();
   connectionsSection.classList.remove("hidden");
-  connectionsTabBtn.classList.add("tab-active");
-  connectionsTabBtn.setAttribute("aria-selected", "true");
-  usersTabBtn.classList.remove("tab-active");
-  usersTabBtn.setAttribute("aria-selected", "false");
-  vlessTabBtn.classList.remove("tab-active");
-  vlessTabBtn.setAttribute("aria-selected", "false");
-  analyticsTabBtn.classList.remove("tab-active");
-  analyticsTabBtn.setAttribute("aria-selected", "false");
+  activateTab(connectionsTabBtn);
+  setPageHeader("Online", "Активные подключения по протоколам");
 }
 
 function formatBytes(bytes) {
@@ -775,12 +812,23 @@ async function api(path, options = {}) {
   return response;
 }
 
+function userAvatarHtml(username) {
+  const raw = String(username || "?").trim();
+  const parts = raw.replace(/^depish_/, "").split(/[_\s.]+/).filter(Boolean);
+  const initials = ((parts[0]?.[0] || raw[0] || "?") + (parts[1]?.[0] || "")).toUpperCase().slice(0, 2);
+  return `<span class="user-avatar" aria-hidden="true">${initials}</span>`;
+}
+
+function userCellHtml(user) {
+  return `<div class="user-cell">${userAvatarHtml(user.username)}<div class="user-meta"><span class="user-name">@${user.username}</span><span class="user-id">#${user.id}</span></div></div>`;
+}
+
 function userRow(user) {
   const tr = document.createElement("tr");
   tr.dataset.userId = String(user.id);
   tr.innerHTML = `
     <td class="cell-num col-id" data-label="ID">${user.id}</td>
-    <td class="col-user" data-label="User"><strong>${user.username}</strong></td>
+    <td class="col-user" data-label="User">${userCellHtml(user)}</td>
     <td class="col-protos" data-label="Пр.">${formatProtoCell(user)}</td>
     <td class="cell-num col-traffic" data-label="↓">${formatBytes(user.traffic_in_bytes)}</td>
     <td class="cell-num col-traffic" data-label="↑">${formatBytes(user.traffic_out_bytes)}</td>
@@ -891,9 +939,6 @@ function renderConnectionsSummary(totals) {
   if (connectionsTotalHttp) {
     connectionsTotalHttp.textContent = fmt("connections_http", "connections_http_ips");
   }
-  if (connectionsTotalSocks) {
-    connectionsTotalSocks.textContent = fmt("connections_socks5", "connections_socks5_ips");
-  }
   if (connectionsTotalMtproto) {
     connectionsTotalMtproto.textContent = fmt("connections_mtproto", "connections_mtproto_ips");
   }
@@ -910,9 +955,8 @@ function connectionRow(user) {
   tr.dataset.userId = String(user.id);
   tr.innerHTML = `
     <td class="cell-num" data-label="ID">${user.id}</td>
-    <td data-label="Username"><strong>${user.username}</strong></td>
+    <td data-label="Username">${userCellHtml(user)}</td>
     <td class="cell-num cell-conn" data-label="HTTP">${formatProtocolConnectionsCell(user.connections_http, user.connections_http_ips, user.allow_http)}</td>
-    <td class="cell-num cell-conn" data-label="SOCKS5">${formatProtocolConnectionsCell(user.connections_socks5, user.connections_socks5_ips, user.allow_socks5)}</td>
     <td class="cell-num cell-conn" data-label="MTProto">${formatProtocolConnectionsCell(user.connections_mtproto, user.connections_mtproto_ips, user.allow_mtproto)}</td>
     <td class="cell-num cell-conn" data-label="Всего">${formatProtocolConnectionsCell(user.connections_total, user.connections_total_ips, true)}</td>
     <td data-label="Онлайн">${onlineStatusPill(user)}</td>
@@ -927,7 +971,6 @@ function updateConnectionRowInPlace(tr, user) {
     if (td) td.innerHTML = html;
   };
   setCell("HTTP", formatProtocolConnectionsCell(user.connections_http, user.connections_http_ips, user.allow_http));
-  setCell("SOCKS5", formatProtocolConnectionsCell(user.connections_socks5, user.connections_socks5_ips, user.allow_socks5));
   setCell("MTProto", formatProtocolConnectionsCell(user.connections_mtproto, user.connections_mtproto_ips, user.allow_mtproto));
   setCell("Всего", formatProtocolConnectionsCell(user.connections_total, user.connections_total_ips, true));
   setCell("Онлайн", onlineStatusPill(user));
@@ -940,7 +983,7 @@ function renderConnectionsTable({ forceFullRender = false } = {}) {
     connectionsTableBody.innerHTML = "";
     const tr = document.createElement("tr");
     const q = String(connectionsSearchInput?.value || "").trim();
-    tr.innerHTML = `<td colspan="7" class="empty-users">${q ? "Ничего не найдено" : "Пользователей пока нет"}</td>`;
+    tr.innerHTML = `<td colspan="6" class="empty-users">${q ? "Ничего не найдено" : "Пользователей пока нет"}</td>`;
     connectionsTableBody.appendChild(tr);
     if (connectionsPagination) connectionsPagination.classList.add("hidden");
     return;
@@ -1025,9 +1068,13 @@ async function loadUsers({ forceFullRender = false, silent = false } = {}) {
       usersListPage = Number(pageData.page) || usersListPage;
       usersTableTotal = total;
       usersCache = Array.isArray(pageData.items) ? pageData.items : [];
+      if (kpiUsersTotal) kpiUsersTotal.textContent = String(total);
+      if (navUsersBadge) navUsersBadge.textContent = String(total);
       if (onlineTotalBadge) {
         const onlineTotal = Number(pageData.online_total) || 0;
         onlineTotalBadge.textContent = `Онлайн сейчас: ${onlineTotal}`;
+        if (kpiOnlineNow) kpiOnlineNow.textContent = String(onlineTotal);
+        if (navOnlineBadge) navOnlineBadge.textContent = String(onlineTotal);
       }
       renderUsersTable({ forceFullRender });
       if (chartUsers) {
@@ -1107,9 +1154,12 @@ function stopLiveRefresh() {
 async function loadMeta() {
   panelMeta = await api("/api/meta");
   if (httpPortLabel) httpPortLabel.textContent = String(panelMeta.proxy_public_http_port ?? 13128);
-  if (socksPortLabel) socksPortLabel.textContent = String(panelMeta.proxy_public_socks_port ?? 11080);
   if (mtprotoPortLabel) mtprotoPortLabel.textContent = String(panelMeta.proxy_public_mtproto_port ?? 2053);
-  if (tgHostLabel) tgHostLabel.textContent = `${panelMeta.proxy_public_host}:${panelMeta.proxy_public_socks_port}`;
+  if (kpiPorts) {
+    const hp = String(panelMeta.proxy_public_http_port ?? 13128);
+    const mp = String(panelMeta.proxy_public_mtproto_port ?? 2053);
+    kpiPorts.textContent = `${hp} / ${mp}`;
+  }
   if (vlessBadge) {
     vlessBadge.classList.remove("ok", "warn");
     if (!panelMeta.vless_active) {
@@ -1128,6 +1178,25 @@ async function loadMeta() {
           "VLESS в настройках, но цепочка к клиентам отключена: нет vless-out на томе, прога SOCKS не прошла или узел недоступен.";
       }
     }
+  }
+  if (kpiVlessState && kpiVlessMeta) {
+    if (!panelMeta.vless_active) {
+      kpiVlessState.textContent = "OFF";
+      kpiVlessMeta.textContent = "Цепочка отключена";
+    } else if (panelMeta.vless_singbox_restart_pending) {
+      kpiVlessState.textContent = "WAIT";
+      kpiVlessMeta.textContent = "Ожидается рестарт сервисов";
+    } else if (panelMeta.vless_clients_chained) {
+      kpiVlessState.textContent = "ON";
+      kpiVlessMeta.textContent = "Трафик идет через VLESS";
+    } else {
+      kpiVlessState.textContent = "WARN";
+      kpiVlessMeta.textContent = "Проверка цепочки не пройдена";
+    }
+  }
+  if (navVlessDot) {
+    const on = !!panelMeta.vless_active && !!panelMeta.vless_clients_chained;
+    navVlessDot.classList.toggle("hidden", !on);
   }
 }
 
@@ -1158,6 +1227,137 @@ async function loadVlessSettings() {
       vlessFormHint.className = "hint callout callout-neutral is-empty";
     }
   }
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function loadOperators({ silent = false } = {}) {
+  if (!operatorsTableBody || authState.is_admin === false) return;
+  try {
+    const items = await api("/api/operators");
+    const list = Array.isArray(items) ? items : [];
+    if (navOperatorsBadge) navOperatorsBadge.textContent = String(list.length);
+    operatorsTableBody.innerHTML = "";
+    if (!list.length) {
+      operatorsTableBody.innerHTML =
+        '<tr><td colspan="4" class="cell-empty">Пока нет операторов — создайте первого выше</td></tr>';
+      return;
+    }
+    list.forEach((op) => {
+      const tr = document.createElement("tr");
+      tr.dataset.username = op.username;
+      tr.innerHTML = `
+        <td data-label="Login"><strong>${escapeHtml(op.username)}</strong></td>
+        <td data-label="Template"><code>${escapeHtml(op.username_prefix)}</code>*</td>
+        <td data-label="Password"><code class="op-password">${escapeHtml(op.password)}</code></td>
+        <td class="col-actions" data-label="Действия">
+          <div class="row-actions op-actions">
+            <button type="button" class="btn btn-secondary btn-compact" data-op-action="password">Пароль</button>
+            <button type="button" class="btn btn-secondary btn-compact" data-op-action="prefix">Шаблон</button>
+            <button type="button" class="btn btn-ghost btn-compact" data-op-action="copy">Копировать</button>
+            <button type="button" class="btn btn-ghost btn-compact menu-item-danger" data-op-action="delete">Удалить</button>
+          </div>
+        </td>
+      `;
+      tr.querySelector('[data-op-action="password"]')?.addEventListener("click", async () => {
+        const next = prompt(`Новый пароль для ${op.username} (пусто = сгенерировать):`, "");
+        if (next === null) return;
+        const password = next.trim() || undefined;
+        try {
+          const body = password ? { password } : { password: cryptoRandomPassword() };
+          const updated = await api(`/api/operators/${encodeURIComponent(op.username)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(password ? { password } : { password: body.password }),
+          });
+          setStatus(`Пароль ${updated.username} обновлён: ${updated.password}`);
+          await loadOperators();
+        } catch (e) {
+          setStatus(e.message, true);
+        }
+      });
+      tr.querySelector('[data-op-action="prefix"]')?.addEventListener("click", async () => {
+        const next = prompt(`Шаблон для ${op.username}:`, op.username_prefix);
+        if (next === null) return;
+        const username_prefix = next.trim();
+        if (!username_prefix) {
+          setStatus("Шаблон не может быть пустым", true);
+          return;
+        }
+        try {
+          await api(`/api/operators/${encodeURIComponent(op.username)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username_prefix }),
+          });
+          setStatus(`Шаблон ${op.username} обновлён`);
+          await loadOperators();
+        } catch (e) {
+          setStatus(e.message, true);
+        }
+      });
+      tr.querySelector('[data-op-action="copy"]')?.addEventListener("click", async () => {
+        const text = `login: ${op.username}\npassword: ${op.password}\nprefix: ${op.username_prefix}`;
+        const ok = await copyToClipboard(text);
+        setStatus(ok ? `Данные ${op.username} скопированы` : "Не удалось скопировать", !ok);
+      });
+      tr.querySelector('[data-op-action="delete"]')?.addEventListener("click", async () => {
+        if (!confirm(`Удалить оператора ${op.username}?`)) return;
+        try {
+          await api(`/api/operators/${encodeURIComponent(op.username)}`, { method: "DELETE" });
+          setStatus(`Оператор ${op.username} удалён`);
+          await loadOperators();
+        } catch (e) {
+          setStatus(e.message, true);
+        }
+      });
+      operatorsTableBody.appendChild(tr);
+    });
+  } catch (e) {
+    if (!silent) setStatus(`Ошибка операторов: ${e.message}`, true);
+  }
+}
+
+function cryptoRandomPassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+}
+
+if (createOperatorForm) {
+  createOperatorForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(createOperatorForm);
+    const payload = {
+      username: String(fd.get("username") || "").trim(),
+      username_prefix: String(fd.get("username_prefix") || "").trim(),
+    };
+    const pwd = String(fd.get("password") || "").trim();
+    if (pwd) payload.password = pwd;
+    if (!payload.username || !payload.username_prefix) {
+      setStatus("Укажите логин и шаблон", true);
+      return;
+    }
+    try {
+      const created = await api("/api/operators", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setStatus(`Оператор ${created.username} создан. Пароль: ${created.password}`);
+      createOperatorForm.reset();
+      await loadOperators();
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  });
 }
 
 function refreshChartUserOptions(users) {
@@ -1240,32 +1440,35 @@ async function loadTrafficChart({ silent = false } = {}) {
         {
           label: "Входящий",
           data: inData,
-          borderColor: "#4f7cff",
-          backgroundColor: "rgba(79,124,255,0.18)",
+          borderColor: "#8b7dff",
+          backgroundColor: "rgba(139,125,255,0.24)",
           fill: true,
           pointRadius: 0,
-          borderWidth: 2,
-          tension: 0.18,
+          pointHoverRadius: 3,
+          borderWidth: 2.2,
+          tension: 0.28,
         },
         {
           label: "Исходящий",
           data: outData,
-          borderColor: "#22c55e",
-          backgroundColor: "rgba(34,197,94,0.14)",
+          borderColor: "#4ec2ff",
+          backgroundColor: "rgba(78,194,255,0.18)",
           fill: true,
           pointRadius: 0,
-          borderWidth: 2,
-          tension: 0.18,
+          pointHoverRadius: 3,
+          borderWidth: 2.2,
+          tension: 0.26,
         },
         {
           label: "Всего",
           data: totalData,
-          borderColor: "#f59e0b",
-          backgroundColor: "rgba(245,158,11,0.12)",
+          borderColor: "#8ee7b5",
+          backgroundColor: "rgba(142,231,181,0.12)",
           fill: false,
           pointRadius: 0,
-          borderWidth: 2,
-          tension: 0.1,
+          pointHoverRadius: 3,
+          borderWidth: 1.9,
+          tension: 0.2,
         },
       ],
     },
@@ -1278,22 +1481,41 @@ async function loadTrafficChart({ silent = false } = {}) {
       },
       plugins: {
         legend: {
-          labels: { color: "#cfe0ff" },
+          labels: {
+            color: "#d6e3ff",
+            usePointStyle: true,
+            pointStyle: "circle",
+            boxWidth: 8,
+            boxHeight: 8,
+            padding: 16,
+          },
+        },
+        tooltip: {
+          backgroundColor: "rgba(8, 14, 29, 0.94)",
+          borderColor: "rgba(143,176,255,0.28)",
+          borderWidth: 1,
+          titleColor: "#e7efff",
+          bodyColor: "#c8d7ff",
+          displayColors: true,
+          padding: 10,
+          cornerRadius: 10,
         },
       },
       scales: {
         x: {
-          grid: { color: "rgba(120,150,220,0.12)" },
+          grid: { color: "rgba(120,150,220,0.1)", drawTicks: false },
           ticks: { color: "#a9bde9", maxRotation: 0, autoSkip: true, maxTicksLimit: 10 },
+          border: { color: "rgba(143,176,255,0.2)" },
         },
         y: {
-          grid: { color: "rgba(120,150,220,0.12)" },
+          grid: { color: "rgba(120,150,220,0.1)", drawTicks: false },
           ticks: {
             color: "#a9bde9",
             callback(value) {
               return formatRate(Number(value));
             },
           },
+          border: { color: "rgba(143,176,255,0.2)" },
           beginAtZero: true,
         },
       },
@@ -1313,6 +1535,110 @@ function showLoggedInUI() {
 function showLoggedOutUI() {
   appContainer.classList.add("hidden");
   loginOverlay.classList.remove("hidden");
+  authState = { username: "", is_admin: true, username_prefix: null };
+  if (authUserLabel) authUserLabel.textContent = "";
+  if (brandSubEl && brandSubDefault) brandSubEl.textContent = brandSubDefault;
+  document.querySelectorAll(".admin-only").forEach((el) => el.classList.remove("hidden"));
+  if (vlessTabBtn) vlessTabBtn.classList.remove("hidden");
+}
+
+async function loadAuthMe() {
+  authState = await api("/api/auth/me");
+  applyAuthScopeUI();
+  return authState;
+}
+
+function applyAuthScopeUI() {
+  const isAdmin = authState.is_admin !== false;
+  const prefix = authState.username_prefix || "";
+  document.querySelectorAll(".admin-only").forEach((el) => {
+    el.classList.toggle("hidden", !isAdmin);
+  });
+  if (vlessTabBtn) {
+    vlessTabBtn.classList.toggle("hidden", !isAdmin);
+    if (!isAdmin && vlessTabBtn.classList.contains("tab-active")) {
+      showUsersTab();
+    }
+  }
+  if (operatorsTabBtn) {
+    operatorsTabBtn.classList.toggle("hidden", !isAdmin);
+    if (!isAdmin && operatorsTabBtn.classList.contains("tab-active")) {
+      showUsersTab();
+    }
+  }
+  if (analyticsTabBtn) {
+    analyticsTabBtn.classList.toggle("hidden", !isAdmin);
+    if (!isAdmin && analyticsTabBtn.classList.contains("tab-active")) {
+      showUsersTab();
+    }
+  }
+  if (authUserLabel) {
+    authUserLabel.textContent = authState.username || "Admin";
+  }
+  if (brandSubEl) {
+    brandSubEl.textContent = prefix
+      ? `Доступ только к шаблону ${prefix}*`
+      : brandSubDefault || "Список, трафик и действия по прокси-аккаунтам";
+  }
+  prefillsScopedUsername();
+  if (isAdmin) {
+    void loadOperators({ silent: true });
+  }
+}
+
+function prefillsScopedUsername() {
+  const usernameInput = createUsernameInput || createForm?.querySelector('input[name="username"]');
+  const prefix = authState.username_prefix || "";
+  if (usernamePrefixAddon) {
+    if (prefix) {
+      usernamePrefixAddon.textContent = prefix;
+      usernamePrefixAddon.classList.remove("hidden");
+    } else {
+      usernamePrefixAddon.textContent = "";
+      usernamePrefixAddon.classList.add("hidden");
+    }
+  }
+  if (!usernameInput) return;
+  if (!prefix) {
+    usernameInput.placeholder = "username";
+    usernameInput.minLength = 3;
+    usernameInput.maxLength = 64;
+    return;
+  }
+  // Operator enters only the suffix; template prefix is locked in the addon.
+  usernameInput.placeholder = "Иванов_И.";
+  usernameInput.minLength = 1;
+  usernameInput.maxLength = Math.max(1, 64 - prefix.length);
+  if (usernameInput.value.startsWith(prefix)) {
+    usernameInput.value = usernameInput.value.slice(prefix.length);
+  }
+}
+
+function buildScopedUsername(rawUsername) {
+  const prefix = authState.username_prefix || "";
+  let name = String(rawUsername || "").trim();
+  if (!prefix) return name;
+  if (name.startsWith(prefix)) return name;
+  name = name.replace(/^_+/, "");
+  return `${prefix}${name}`;
+}
+
+function assertScopedUsername(username) {
+  const prefix = authState.username_prefix || "";
+  const finalName = buildScopedUsername(username);
+  if (prefix && !finalName.startsWith(prefix)) {
+    throw new Error(`Логин должен начинаться с ${prefix}`);
+  }
+  if (!finalName || finalName.length < 3) {
+    throw new Error("Логин слишком короткий");
+  }
+  if (finalName.length > 64) {
+    throw new Error("Логин слишком длинный");
+  }
+  if (prefix && finalName === prefix) {
+    throw new Error(`Укажите имя после шаблона ${prefix}`);
+  }
+  return finalName;
 }
 
 function syncMtprotoAdFormVisibility() {
@@ -1341,10 +1667,15 @@ createForm.addEventListener("submit", async (e) => {
   const payload = {
     username: String(formData.get("username") || "").trim(),
     allow_http: formData.get("allow_http") === "on",
-    allow_socks5: formData.get("allow_socks5") === "on",
     allow_mtproto: formData.get("allow_mtproto") === "on",
     mtproto_ad_enabled: formData.get("mtproto_ad_enabled") === "on",
   };
+  try {
+    payload.username = assertScopedUsername(payload.username);
+  } catch (scopeErr) {
+    setStatus(scopeErr.message, true);
+    return;
+  }
   if (payload.mtproto_ad_enabled) {
     const channel = String(formData.get("mtproto_ad_channel") || "").trim();
     const adTag = String(formData.get("mtproto_ad_tag") || "").trim();
@@ -1384,8 +1715,8 @@ createForm.addEventListener("submit", async (e) => {
     }
     createForm.reset();
     createForm.querySelector('input[name="allow_http"]').checked = true;
-    createForm.querySelector('input[name="allow_socks5"]').checked = true;
     createForm.querySelector('input[name="allow_mtproto"]').checked = false;
+    prefillsScopedUsername();
     syncMtprotoAdFormVisibility();
     await loadUsers({ forceFullRender: true });
     await loadTrafficChart();
@@ -1575,6 +1906,16 @@ vlessTabBtn.addEventListener("click", async () => {
     setStatus(`Ошибка VLESS: ${e.message}`, true);
   }
 });
+if (operatorsTabBtn) {
+  operatorsTabBtn.addEventListener("click", async () => {
+    showOperatorsTab();
+    try {
+      await loadOperators();
+    } catch (e) {
+      setStatus(`Ошибка операторов: ${e.message}`, true);
+    }
+  });
+}
 analyticsTabBtn.addEventListener("click", async () => {
   showAnalyticsTab();
   try {
@@ -1720,9 +2061,12 @@ loginForm.addEventListener("submit", async (e) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    await loadAuthMe();
     showLoggedInUI();
     await loadMeta();
-    await loadVlessSettings();
+    if (authState.is_admin !== false) {
+      await loadVlessSettings();
+    }
     await loadUsers({ forceFullRender: true });
     startLiveRefresh();
     setStatus("Вы успешно вошли");
@@ -1733,13 +2077,17 @@ loginForm.addEventListener("submit", async (e) => {
 
 async function bootstrap() {
   try {
-    await api("/api/auth/me");
+    await loadAuthMe();
     showLoggedInUI();
     showUsersTab();
     await loadMeta();
-    await loadVlessSettings();
+    if (authState.is_admin !== false) {
+      await loadVlessSettings();
+    }
     await loadUsers({ forceFullRender: true });
-    await loadTrafficChart();
+    if (authState.is_admin !== false) {
+      await loadTrafficChart();
+    }
     startLiveRefresh();
   } catch (_e) {
     showLoggedOutUI();
@@ -1755,6 +2103,22 @@ document.addEventListener("visibilitychange", () => {
   setLiveBadgePaused(false);
   setConnectionsLiveBadgePaused(false);
   void refreshLiveData();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "k" && event.key !== "K") return;
+  if (!(event.metaKey || event.ctrlKey)) return;
+  if (appContainer.classList.contains("hidden")) return;
+  const tag = (event.target && event.target.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  event.preventDefault();
+  if (usersSearchInput && !usersTableSection.classList.contains("hidden")) {
+    usersSearchInput.focus();
+    usersSearchInput.select();
+  } else if (connectionsSearchInput && connectionsSection && !connectionsSection.classList.contains("hidden")) {
+    connectionsSearchInput.focus();
+    connectionsSearchInput.select();
+  }
 });
 
 bootstrap();
@@ -1890,7 +2254,16 @@ document.addEventListener("click", (event) => {
   if (!archiveMenu.contains(event.target) && event.target !== archiveMenuBtn) {
     closeArchiveMenu();
   }
-  if (!event.target.closest(".row-actions-menu")) {
+  if (!event.target.closest(".row-actions-menu") && !event.target.closest(".row-menu.is-open")) {
     closeAllRowMenus();
   }
 });
+
+window.addEventListener("resize", () => closeAllRowMenus());
+window.addEventListener(
+  "scroll",
+  () => {
+    if (document.querySelector(".row-menu.is-open")) closeAllRowMenus();
+  },
+  true
+);

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Proxy Admin Panel</title>
+    <title>brathe.cc — Admin</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -11,7 +11,7 @@
       rel="stylesheet"
     />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=26" />
+    <link rel="stylesheet" href="/static/styles.css?v=39" />
   </head>
   <body>
     <div id="loginOverlay" class="overlay">
@@ -19,11 +19,11 @@
         <div class="login-brand">
           <span class="login-logo" aria-hidden="true"></span>
           <div>
-            <h1>Вход</h1>
-            <p class="login-sub">Админ-панель прокси</p>
+            <h1>brathe.cc</h1>
+            <p class="login-sub">Admin panel</p>
           </div>
         </div>
-        <p class="login-lead">Введите учётные данные администратора.</p>
+        <p class="login-lead">Введите логин и пароль для входа в панель.</p>
         <form id="loginForm" class="login-form">
           <label class="field">
             <span class="field-label">Логин</span>
@@ -40,47 +40,161 @@
     </div>
 
     <main class="container hidden" id="appContainer">
-      <header class="topbar">
-        <div class="topbar-main">
-          <div class="brand">
+      <div class="layout-shell">
+        <aside class="sidebar" aria-label="Навигация">
+          <div class="sidebar-brand">
             <span class="brand-mark" aria-hidden="true"></span>
             <div>
-              <h1 class="brand-title">Proxy Admin</h1>
-              <p class="brand-sub">Управление пользователями и цепочкой VLESS</p>
+              <p class="sidebar-title">brathe.cc</p>
+              <p class="sidebar-sub">ADMIN</p>
             </div>
           </div>
-          <div class="endpoint-row" aria-label="Порты и хост">
-            <span class="endpoint-chip" title="HTTP-прокси">HTTP <strong id="httpPortLabel">13128</strong></span>
-            <span class="endpoint-chip" title="SOCKS5">SOCKS <strong id="socksPortLabel">11080</strong></span>
-            <span class="endpoint-chip" title="MTProto">MTProto <strong id="mtprotoPortLabel">2053</strong></span>
-            <span class="endpoint-chip endpoint-chip-wide" title="Telegram SOCKS5"
-              >TG <code id="tgHostLabel">—</code></span
-            >
-            <span id="vlessBadge" class="status-pill ok hidden" title="">VLESS</span>
+
+          <nav class="sidebar-nav" aria-label="Разделы">
+            <div class="sidebar-group">
+              <p class="sidebar-group-title">Обзор</p>
+              <div class="tab-bar tab-bar-side" role="tablist">
+                <button id="usersTabBtn" type="button" class="tab tab-active" role="tab" aria-selected="true">
+                  <span class="tab-icon" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                  </span>
+                  <span class="tab-label">Пользователи</span>
+                  <span id="navUsersBadge" class="nav-badge nav-badge-accent">0</span>
+                </button>
+                <button id="connectionsTabBtn" type="button" class="tab" role="tab" aria-selected="false">
+                  <span class="tab-icon" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1.2" fill="currentColor"/></svg>
+                  </span>
+                  <span class="tab-label">Online</span>
+                  <span id="navOnlineBadge" class="nav-badge nav-badge-ok">0</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="sidebar-group admin-only" id="sidebarDataGroup">
+              <p class="sidebar-group-title">Данные</p>
+              <div class="tab-bar tab-bar-side" role="tablist">
+                <button id="analyticsTabBtn" type="button" class="tab" role="tab" aria-selected="false">
+                  <span class="tab-icon" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 3 5-7"/></svg>
+                  </span>
+                  <span class="tab-label">Трафик</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="sidebar-group admin-only" id="sidebarNetworkGroup">
+              <p class="sidebar-group-title">Сеть</p>
+              <div class="tab-bar tab-bar-side" role="tablist">
+                <button id="vlessTabBtn" type="button" class="tab" role="tab" aria-selected="false">
+                  <span class="tab-icon" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1l2.1-2.1M17 7l2.1-2.1"/></svg>
+                  </span>
+                  <span class="tab-label">VLESS</span>
+                  <span id="navVlessDot" class="nav-dot hidden" title="VLESS активен"></span>
+                </button>
+              </div>
+            </div>
+
+            <div class="sidebar-group admin-only" id="sidebarAccessGroup">
+              <p class="sidebar-group-title">Доступ</p>
+              <div class="tab-bar tab-bar-side" role="tablist">
+                <button id="operatorsTabBtn" type="button" class="tab" role="tab" aria-selected="false">
+                  <span class="tab-icon" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                  </span>
+                  <span class="tab-label">Операторы</span>
+                  <span id="navOperatorsBadge" class="nav-badge nav-badge-accent">0</span>
+                </button>
+              </div>
+            </div>
+          </nav>
+
+          <div class="sidebar-footer">
+            <button id="logoutBtn" type="button" class="btn btn-ghost sidebar-logout">
+              <span class="tab-icon" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              </span>
+              Выйти
+            </button>
           </div>
-        </div>
-        <button id="logoutBtn" type="button" class="btn btn-ghost">Выйти</button>
-      </header>
+        </aside>
 
-      <div class="tab-bar" role="tablist" aria-label="Разделы панели">
-        <button id="usersTabBtn" type="button" class="tab tab-active" role="tab" aria-selected="true">
-          Пользователи
-        </button>
-        <button id="vlessTabBtn" type="button" class="tab" role="tab" aria-selected="false">VLESS</button>
-        <button id="analyticsTabBtn" type="button" class="tab" role="tab" aria-selected="false">Трафик</button>
-        <button id="connectionsTabBtn" type="button" class="tab" role="tab" aria-selected="false">Подключения</button>
-      </div>
+        <div class="content-area">
+          <header class="topbar topbar-utility">
+            <div class="topbar-main">
+              <div class="endpoint-row" aria-label="Порты и хост">
+                <span class="endpoint-chip" title="HTTP-прокси">HTTP <strong id="httpPortLabel">13128</strong></span>
+                <span class="endpoint-chip" title="MTProto">MTProto <strong id="mtprotoPortLabel">2053</strong></span>
+                <span id="vlessBadge" class="status-pill ok hidden" title="">VLESS</span>
+              </div>
+            </div>
+            <div class="topbar-actions">
+              <span id="authUserLabel" class="auth-user-label" title="Текущий вход">Admin</span>
+              <span class="top-search-hint" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                Поиск
+                <kbd>K</kbd>
+              </span>
+            </div>
+          </header>
 
-      <section class="card" id="usersSection">
+          <header class="page-header">
+            <div class="page-header-main">
+              <h1 class="brand-title" id="pageTitle">Пользователи</h1>
+              <p class="brand-sub" id="pageSubtitle">Список, трафик и действия по прокси-аккаунтам</p>
+            </div>
+            <span id="pageStatusPill" class="page-status-pill">
+              <span class="page-status-dot" aria-hidden="true"></span>
+              <span id="liveRefreshBadge" class="live-badge" title="Данные обновляются автоматически">live</span>
+            </span>
+          </header>
+
+          <section class="kpi-grid" aria-label="Сводка">
+            <article class="kpi-card">
+              <p class="kpi-label">Всего пользователей</p>
+              <p class="kpi-value" id="kpiUsersTotal">0</p>
+              <p class="kpi-meta">Учетные записи в базе</p>
+            </article>
+            <article class="kpi-card">
+              <p class="kpi-label">Онлайн сейчас</p>
+              <p class="kpi-value kpi-value-ok" id="kpiOnlineNow">0</p>
+              <p class="kpi-meta">Активные за окно</p>
+            </article>
+            <article class="kpi-card">
+              <p class="kpi-label">VLESS</p>
+              <p class="kpi-value" id="kpiVlessState">OFF</p>
+              <p class="kpi-meta" id="kpiVlessMeta">Цепочка отключена</p>
+            </article>
+            <article class="kpi-card">
+              <p class="kpi-label">Порты</p>
+              <p class="kpi-value" id="kpiPorts">13128 / 2053</p>
+              <p class="kpi-meta">HTTP / MTProto</p>
+            </article>
+          </section>
+
+      <section class="card card-create" id="usersSection">
         <div class="card-body card-body-tight">
         <form id="createUserForm" class="create-form create-form-inline">
           <div class="create-form-row">
             <div class="create-form-intro">
-              <h2 class="card-title tight">Новый пользователь</h2>
+              <h2 class="card-title tight">Новый аккаунт</h2>
+              <p class="card-desc tight">Создание доступа к прокси</p>
             </div>
-            <label class="field field-compact">
+            <label class="field field-compact field-username-template">
               <span class="field-label">Логин</span>
-              <input name="username" required minlength="3" maxlength="64" autocomplete="off" />
+              <div class="username-template-input">
+                <span id="usernamePrefixAddon" class="username-prefix-addon hidden" aria-hidden="true"></span>
+                <input
+                  id="createUsernameInput"
+                  name="username"
+                  required
+                  minlength="1"
+                  maxlength="64"
+                  autocomplete="off"
+                  placeholder="Иванов_И."
+                />
+              </div>
             </label>
             <label class="field field-compact">
               <span class="field-label">Пароль <span class="field-hint">авто</span></span>
@@ -88,7 +202,6 @@
             </label>
             <div class="proto-toggles proto-toggles-inline" role="group" aria-label="Протоколы">
               <label class="check-tile check-tile-compact"><input type="checkbox" name="allow_http" checked /> <span>HTTP</span></label>
-              <label class="check-tile check-tile-compact"><input type="checkbox" name="allow_socks5" checked /> <span>SOCKS5</span></label>
               <label class="check-tile check-tile-compact"><input type="checkbox" name="allow_mtproto" id="allowMtprotoCheckbox" /> <span>MTProto</span></label>
             </div>
             <label class="field field-compact field-compact-date">
@@ -125,14 +238,14 @@
       <section class="card card-vless hidden" id="vlessSection">
         <div class="card-head">
           <h2 class="card-title">VLESS</h2>
-          <p class="card-desc">Цепочка для HTTP, SOCKS5 и MTProto через sing-box</p>
+          <p class="card-desc">Цепочка для HTTP и MTProto через sing-box</p>
         </div>
         <div class="card-body">
         <details class="help-details">
           <summary>Справка и диагностика</summary>
           <div class="help-details-body">
             <p>
-              Если узел VLESS отвечает, трафик 3proxy (HTTP/SOCKS) и MTProto (mtg) идёт в sing-box по SOCKS5, затем в VLESS; если нет — цепочка не включается и клиенты выходят в интернет напрямую.
+              Если узел VLESS отвечает, трафик 3proxy (HTTP) и MTProto (mtg) идёт через sing-box, затем в VLESS; если нет — цепочка не включается и клиенты выходят в интернет напрямую.
             </p>
             <p>После сохранения ссылки панель автоматически перезапускает нужные сервисы цепочки.</p>
             <p>
@@ -169,14 +282,57 @@
         </div>
       </section>
 
+      <section class="card hidden admin-only" id="operatorsSection">
+        <div class="card-head">
+          <h2 class="card-title">Операторы панели</h2>
+          <p class="card-desc">
+            Вход в панель с доступом только к proxy-пользователям по шаблону логина (например <code>depish_</code>).
+          </p>
+        </div>
+        <div class="card-body card-body-tight">
+          <form id="createOperatorForm" class="create-form create-form-inline">
+            <div class="create-form-row">
+              <div class="create-form-intro">
+                <h3 class="card-title tight">Новый оператор</h3>
+              </div>
+              <label class="field field-compact">
+                <span class="field-label">Логин</span>
+                <input name="username" required minlength="2" maxlength="64" autocomplete="off" placeholder="depish" />
+              </label>
+              <label class="field field-compact">
+                <span class="field-label">Шаблон</span>
+                <input name="username_prefix" required minlength="1" maxlength="64" autocomplete="off" placeholder="depish_" />
+              </label>
+              <label class="field field-compact">
+                <span class="field-label">Пароль <span class="field-hint">авто</span></span>
+                <input name="password" type="text" minlength="6" maxlength="128" placeholder="сгенерировать" autocomplete="off" />
+              </label>
+              <button type="submit" class="btn btn-primary btn-compact create-form-submit">Создать</button>
+            </div>
+          </form>
+        </div>
+        <div class="table-wrap">
+          <table class="users-table">
+            <thead>
+              <tr>
+                <th scope="col">Login</th>
+                <th scope="col">Template</th>
+                <th scope="col">Password</th>
+                <th scope="col"></th>
+              </tr>
+            </thead>
+            <tbody id="operatorsTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="card" id="usersTableSection">
         <div class="actions">
           <div>
-            <h2 class="card-title tight">Пользователи</h2>
-            <p class="card-desc tight">Список, трафик и действия</p>
+            <h2 class="card-title tight">Аккаунты</h2>
+            <p class="card-desc tight">Управление доступом и лимитами</p>
             <p class="card-desc tight users-live-row">
               <span id="onlineTotalBadge">Онлайн сейчас: —</span>
-              <span id="liveRefreshBadge" class="live-badge" title="Данные обновляются автоматически">● live</span>
             </p>
           </div>
           <div class="actions-right">
@@ -199,8 +355,8 @@
                 </label>
                 <button id="reportUsersBtn" class="menu-item-btn">Отчёт по пользователям (CSV)</button>
                 <button id="reportLinksBtn" class="menu-item-btn">Отчёт CSV со ссылками (HTTP, Telegram)</button>
-                <button id="backupBtn" class="menu-item-btn">Скачать backup</button>
-                <label class="menu-item-label">
+                <button id="backupBtn" class="menu-item-btn admin-only">Скачать backup</button>
+                <label class="menu-item-label admin-only">
                   Восстановить из файла (SQLite .db или legacy JSON)
                   <input
                     id="restoreInput"
@@ -216,15 +372,15 @@
           <table class="users-table users-table-compact">
             <thead>
               <tr>
-                <th class="sortable col-id" data-sort="id" scope="col" title="ID"># <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable col-id" data-sort="id" scope="col" title="ID">ID <span class="sort-indicator" aria-hidden="true"></span></th>
                 <th class="sortable col-user" data-sort="username" scope="col" title="Username">User <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="col-protos" scope="col" title="HTTP · SOCKS5 · MTProto">Пр.</th>
-                <th class="sortable col-traffic" data-sort="traffic_in_bytes" scope="col" title="Входящий">↓ <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable col-traffic" data-sort="traffic_out_bytes" scope="col" title="Исходящий">↑ <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable col-traffic" data-sort="traffic_bytes" scope="col" title="Всего">Σ <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable col-req" data-sort="requests_count" scope="col" title="Запросов">#req <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable col-status" data-sort="is_online" scope="col" title="Онлайн и доступ">Статус <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable col-limits" data-sort="expires_at" scope="col" title="Срок и лимит">Срок <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="col-protos" scope="col" title="HTTP · MTProto">Protocols</th>
+                <th class="sortable col-traffic" data-sort="traffic_in_bytes" scope="col" title="Входящий">In <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable col-traffic" data-sort="traffic_out_bytes" scope="col" title="Исходящий">Out <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable col-traffic" data-sort="traffic_bytes" scope="col" title="Всего">Total <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable col-req" data-sort="requests_count" scope="col" title="Запросов">Req <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable col-status" data-sort="is_online" scope="col" title="Онлайн и доступ">Status <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="sortable col-limits" data-sort="expires_at" scope="col" title="Срок и лимит">Expire <span class="sort-indicator" aria-hidden="true"></span></th>
                 <th class="col-actions" scope="col"></th>
               </tr>
             </thead>
@@ -255,15 +411,6 @@
                 <div class="traffic-summary-metric traffic-summary-metric-total">
                   <dt>Сессий</dt>
                   <dd id="connectionsTotalHttp" class="traffic-summary-total-dd traffic-summary-conn-dd">—</dd>
-                </div>
-              </dl>
-            </article>
-            <article class="traffic-summary-block">
-              <h3 class="traffic-summary-heading">SOCKS5</h3>
-              <dl class="traffic-summary-metrics">
-                <div class="traffic-summary-metric traffic-summary-metric-total">
-                  <dt>Сессий</dt>
-                  <dd id="connectionsTotalSocks" class="traffic-summary-total-dd traffic-summary-conn-dd">—</dd>
                 </div>
               </dl>
             </article>
@@ -311,7 +458,6 @@
                 <th class="sortable" data-sort="id" scope="col">ID <span class="sort-indicator" aria-hidden="true"></span></th>
                 <th class="sortable" data-sort="username" scope="col">Username <span class="sort-indicator" aria-hidden="true"></span></th>
                 <th class="sortable" data-sort="connections_http" scope="col">HTTP <span class="sort-indicator" aria-hidden="true"></span></th>
-                <th class="sortable" data-sort="connections_socks5" scope="col">SOCKS5 <span class="sort-indicator" aria-hidden="true"></span></th>
                 <th class="sortable" data-sort="connections_mtproto" scope="col">MTProto <span class="sort-indicator" aria-hidden="true"></span></th>
                 <th class="sortable" data-sort="connections_total" scope="col">Всего <span class="sort-indicator" aria-hidden="true"></span></th>
                 <th class="sortable" data-sort="is_online" scope="col">Онлайн <span class="sort-indicator" aria-hidden="true"></span></th>
@@ -403,6 +549,8 @@
       </section>
 
       <div id="status" class="status-bar" role="status"></div>
+        </div>
+      </div>
     </main>
 
     <div id="limitsModal" class="modal hidden" style="display: none" aria-modal="true" role="dialog">
@@ -496,6 +644,6 @@
         </div>
       </div>
     </div>
-    <script src="/static/app.js?v=34"></script>
+    <script src="/static/app.js?v=46"></script>
   </body>
 </html>
