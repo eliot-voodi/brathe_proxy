@@ -48,35 +48,40 @@ docker compose up -d
 
 ## Установка на пустую машину (через GitHub)
 
-Скрипт `deploy/install.sh` устанавливает Docker/Compose, клонирует проект, спрашивает параметры и поднимает панель.
+Репозиторий: `https://github.com/eliot-voodi/brathe_proxy` (ветка `main`).
 
-### Что скрипт спросит
+Скрипт `deploy/install.sh` ставит Docker/Compose, клонирует проект, спрашивает порты/пароль/домен и поднимает стек.
 
-- порт панели;
-- порты HTTP/SOCKS5 прокси;
-- пароль админа.
-- домен панели для публичных ссылок/MTProto (обязательно для `faketls`).
+Если репозиторий **приватный**, нужен GitHub PAT с правом `repo`:
 
-Остальные параметры скрипт выставляет автоматически:
+```bash
+apt-get update -y
+apt-get install -y curl sudo
+export GITHUB_TOKEN='ВАШ_PAT'
+curl -fsSL -H "Authorization: token ${GITHUB_TOKEN}" \
+  https://raw.githubusercontent.com/eliot-voodi/brathe_proxy/main/deploy/install.sh \
+  -o /tmp/install.sh
+chmod +x /tmp/install.sh
+sudo GITHUB_TOKEN="${GITHUB_TOKEN}" bash /tmp/install.sh
+```
 
-- логин админа: `admin`;
-- `PROXY_PUBLIC_HOST=auto`;
-- принимает любые пароли админа (включая спецсимволы), кроме переводов строки.
+Если репозиторий публичный:
 
-### Запуск
+```bash
+apt-get update -y
+apt-get install -y curl sudo
+curl -fsSL https://raw.githubusercontent.com/eliot-voodi/brathe_proxy/main/deploy/install.sh -o /tmp/install.sh
+chmod +x /tmp/install.sh
+sudo bash /tmp/install.sh
+```
 
-1) Скачайте репозиторий/скрипт на целевую машину.  
-2) Запустите:
+Либо из уже склонированного каталога:
 
 ```bash
 sudo bash deploy/install.sh
 ```
 
-Если хотите запуск прямо из raw GitHub, можно так (замените URL):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/deploy/install.sh | sudo bash
-```
+Шаблон переменных: `.env.example`. Секреты и база (`data/panel.db`) в git не входят — их создаёт установщик.
 
 ### Важно
 
@@ -114,7 +119,7 @@ curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/deploy/install.
 Параметры минимальной нагрузки:
 
 - `PROXY_LOGDUMP_BYTES` (по умолчанию `65536`) — как часто `3proxy` пишет промежуточные записи при длинных сессиях. Больше значение = меньше нагрузка, реже обновления.
-- `TRAFFIC_POLL_INTERVAL_SECONDS` (по умолчанию `2.0`) — как часто backend читает лог и обновляет БД.
+- `TRAFFIC_POLL_INTERVAL_SECONDS` (по умолчанию `8.0`) — как часто backend читает лог и обновляет БД.
 
 ## Обновление с GitHub
 

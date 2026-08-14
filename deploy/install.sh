@@ -128,10 +128,18 @@ assert_port_free() {
 
 echo "== Proxy Admin Panel installer =="
 
-REPO_URL_VALUE="${REPO_URL:-https://github.com/sashagusq-gif/proxy-panel.git}"
+REPO_URL_VALUE="${REPO_URL:-https://github.com/eliot-voodi/brathe_proxy.git}"
 BRANCH_VALUE="${BRANCH:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/proxy-admin-panel}"
 ADMIN_USERNAME="admin"
+
+git_with_auth() {
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    git -c "http.extraHeader=Authorization: Bearer ${GITHUB_TOKEN}" "$@"
+  else
+    git "$@"
+  fi
+}
 
 PANEL_PORT="$(prompt_port "Panel port" "8003")"
 HTTP_PROXY_PORT="$(prompt_port "HTTP proxy port" "13128")"
@@ -169,7 +177,11 @@ else
   MTPROTO_FAKE_TLS_DOMAIN="${MTPROTO_FAKE_TLS_DOMAIN:-yandex.ru}"
 fi
 PROXY_LOGDUMP_BYTES="${PROXY_LOGDUMP_BYTES:-65536}"
-TRAFFIC_POLL_INTERVAL_SECONDS="${TRAFFIC_POLL_INTERVAL_SECONDS:-2.0}"
+TRAFFIC_POLL_INTERVAL_SECONDS="${TRAFFIC_POLL_INTERVAL_SECONDS:-8.0}"
+TRAFFIC_SAMPLING_INTERVAL_SECONDS="${TRAFFIC_SAMPLING_INTERVAL_SECONDS:-180}"
+TRAFFIC_SAMPLES_PER_USER="${TRAFFIC_SAMPLES_PER_USER:-false}"
+TRAFFIC_EVENTS_ENABLED="${TRAFFIC_EVENTS_ENABLED:-false}"
+TRAFFIC_SAMPLES_RETENTION_HOURS="${TRAFFIC_SAMPLES_RETENTION_HOURS:-24}"
 MTPROTO_PUBLIC_PORT="${MTPROTO_PUBLIC_PORT:-2053}"
 MTPROTO_SECRET_MODE="${MTPROTO_SECRET_MODE:-faketls}"
 # Должно совпадать с docker-compose (статический IP sing-box в proxy_internal),
@@ -217,18 +229,21 @@ fi
 
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
   echo "Updating existing repository in ${INSTALL_DIR}..."
-  git -C "${INSTALL_DIR}" remote set-url origin "${REPO_URL_VALUE}" 2>/dev/null || true
-  git -C "${INSTALL_DIR}" fetch origin "${BRANCH_VALUE}" --prune
-  git -C "${INSTALL_DIR}" checkout "${BRANCH_VALUE}"
+  git_with_auth -C "${INSTALL_DIR}" remote set-url origin "${REPO_URL_VALUE}" 2>/dev/null || true
+  git_with_auth -C "${INSTALL_DIR}" fetch origin "${BRANCH_VALUE}" --prune
+  git_with_auth -C "${INSTALL_DIR}" checkout "${BRANCH_VALUE}"
   # Совпадает с origin (в т.ч. для shallow clone); при расхождении — жёстко как на GitHub.
-  if ! git -C "${INSTALL_DIR}" merge --ff-only "origin/${BRANCH_VALUE}"; then
+  if ! git_with_auth -C "${INSTALL_DIR}" merge --ff-only "origin/${BRANCH_VALUE}"; then
     echo "WARN: fast-forward failed, resetting to origin/${BRANCH_VALUE} (локальные коммиты в ${INSTALL_DIR} будут потеряны)."
-    git -C "${INSTALL_DIR}" reset --hard "origin/${BRANCH_VALUE}"
+    git_with_auth -C "${INSTALL_DIR}" reset --hard "origin/${BRANCH_VALUE}"
   fi
 else
   echo "Cloning repository to ${INSTALL_DIR}..."
+  if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+    echo "If clone fails on a private repo, rerun with GITHUB_TOKEN set (PAT with repo scope)."
+  fi
   rm -rf "${INSTALL_DIR}"
-  git clone --depth 1 --branch "${BRANCH_VALUE}" "${REPO_URL_VALUE}" "${INSTALL_DIR}"
+  git_with_auth clone --depth 1 --branch "${BRANCH_VALUE}" "${REPO_URL_VALUE}" "${INSTALL_DIR}"
 fi
 
 PANEL_GIT_REVISION="$(git -C "${INSTALL_DIR}" rev-parse HEAD)"
@@ -257,6 +272,10 @@ chmod 755 "${PANEL_DATA_DIR}"
   echo "MTPROTO_FAKE_TLS_DOMAIN=$(quote_env_value "${MTPROTO_FAKE_TLS_DOMAIN}")"
   echo "PROXY_LOGDUMP_BYTES=${PROXY_LOGDUMP_BYTES}"
   echo "TRAFFIC_POLL_INTERVAL_SECONDS=${TRAFFIC_POLL_INTERVAL_SECONDS}"
+  echo "TRAFFIC_SAMPLING_INTERVAL_SECONDS=${TRAFFIC_SAMPLING_INTERVAL_SECONDS}"
+  echo "TRAFFIC_SAMPLES_PER_USER=${TRAFFIC_SAMPLES_PER_USER}"
+  echo "TRAFFIC_EVENTS_ENABLED=${TRAFFIC_EVENTS_ENABLED}"
+  echo "TRAFFIC_SAMPLES_RETENTION_HOURS=${TRAFFIC_SAMPLES_RETENTION_HOURS}"
   echo "SINGBOX_SOCKS_HOST=$(quote_env_value "${SINGBOX_SOCKS_HOST}")"
   echo "SINGBOX_SOCKS_PORT=${SINGBOX_SOCKS_PORT}"
   echo "PANEL_DATA_HOST_PATH=$(quote_env_value "${PANEL_DATA_DIR}")"
