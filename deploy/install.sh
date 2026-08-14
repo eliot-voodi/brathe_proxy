@@ -134,16 +134,30 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/proxy-admin-panel}"
 ADMIN_USERNAME="admin"
 
 git_with_auth() {
+  GIT_TERMINAL_PROMPT=0 git "$@"
+}
+
+clean_repo_url() {
+  local url="${1}"
+  url="${url#https://}"
+  if [[ "${url}" == *"@"* ]]; then
+    url="${url#*@}"
+  fi
+  echo "https://${url}"
+}
+
+authenticated_repo_url() {
+  local url
+  url="$(clean_repo_url "${REPO_URL_VALUE}")"
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    git -c "http.extraHeader=Authorization: Bearer ${GITHUB_TOKEN}" "$@"
+    echo "https://x-access-token:${GITHUB_TOKEN}@${url#https://}"
   else
-    git "$@"
+    echo "${url}"
   fi
 }
 
 PANEL_PORT="$(prompt_port "Panel port" "8003")"
 HTTP_PROXY_PORT="$(prompt_port "HTTP proxy port" "13128")"
-SOCKS_PROXY_PORT="$(prompt_port "SOCKS5 proxy port" "11080")"
 
 ADMIN_PASSWORD="$(prompt_secret "Admin password (leave empty for random)")"
 if [[ -z "${ADMIN_PASSWORD}" ]]; then
@@ -208,7 +222,6 @@ fi
 
 assert_port_free "${PANEL_PORT}" "Panel"
 assert_port_free "${HTTP_PROXY_PORT}" "HTTP proxy"
-assert_port_free "${SOCKS_PROXY_PORT}" "SOCKS5 proxy"
 assert_port_free "${MTPROTO_PUBLIC_PORT}" "MTProto"
 
 echo "Installing system dependencies..."
@@ -229,7 +242,7 @@ fi
 
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
   echo "Updating existing repository in ${INSTALL_DIR}..."
-  git_with_auth -C "${INSTALL_DIR}" remote set-url origin "${REPO_URL_VALUE}" 2>/dev/null || true
+  git_with_auth -C "${INSTALL_DIR}" remote set-url origin "$(authenticated_repo_url)"
   git_with_auth -C "${INSTALL_DIR}" fetch origin "${BRANCH_VALUE}" --prune
   git_with_auth -C "${INSTALL_DIR}" checkout "${BRANCH_VALUE}"
   # Совпадает с origin (в т.ч. для shallow clone); при расхождении — жёстко как на GitHub.
@@ -237,13 +250,15 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
     echo "WARN: fast-forward failed, resetting to origin/${BRANCH_VALUE} (локальные коммиты в ${INSTALL_DIR} будут потеряны)."
     git_with_auth -C "${INSTALL_DIR}" reset --hard "origin/${BRANCH_VALUE}"
   fi
+  git_with_auth -C "${INSTALL_DIR}" remote set-url origin "$(clean_repo_url "${REPO_URL_VALUE}")"
 else
   echo "Cloning repository to ${INSTALL_DIR}..."
   if [[ -z "${GITHUB_TOKEN:-}" ]]; then
     echo "If clone fails on a private repo, rerun with GITHUB_TOKEN set (PAT with repo scope)."
   fi
   rm -rf "${INSTALL_DIR}"
-  git_with_auth clone --depth 1 --branch "${BRANCH_VALUE}" "${REPO_URL_VALUE}" "${INSTALL_DIR}"
+  git_with_auth clone --depth 1 --branch "${BRANCH_VALUE}" "$(authenticated_repo_url)" "${INSTALL_DIR}"
+  git_with_auth -C "${INSTALL_DIR}" remote set-url origin "$(clean_repo_url "${REPO_URL_VALUE}")"
 fi
 
 PANEL_GIT_REVISION="$(git -C "${INSTALL_DIR}" rev-parse HEAD)"
@@ -261,7 +276,6 @@ chmod 755 "${PANEL_DATA_DIR}"
 {
   echo "PANEL_PORT=${PANEL_PORT}"
   echo "HTTP_PROXY_PORT=${HTTP_PROXY_PORT}"
-  echo "SOCKS_PROXY_PORT=${SOCKS_PROXY_PORT}"
   echo "PANEL_SECRET_KEY=$(quote_env_value "${PANEL_SECRET_KEY}")"
   echo "ADMIN_USERNAME=$(quote_env_value "${ADMIN_USERNAME}")"
   echo "ADMIN_PASSWORD=$(quote_env_value "${ADMIN_PASSWORD}")"
@@ -286,7 +300,6 @@ chmod 755 "${PANEL_DATA_DIR}"
 echo "Opening firewall ports (best effort)..."
 open_port_best_effort "${PANEL_PORT}"
 open_port_best_effort "${HTTP_PROXY_PORT}"
-open_port_best_effort "${SOCKS_PROXY_PORT}"
 open_port_best_effort "${MTPROTO_PUBLIC_PORT}"
 
 echo "Starting stack..."
@@ -309,7 +322,6 @@ echo "Admin username: ${ADMIN_USERNAME}"
 echo "Admin password: ${ADMIN_PASSWORD}"
 echo "HTTP proxy port: ${HTTP_PROXY_PORT}"
 echo "Host data directory (SQLite DB, backups): ${PANEL_DATA_DIR}"
-echo "SOCKS5 proxy port: ${SOCKS_PROXY_PORT}"
 echo "MTProto host: ${MTPROTO_PUBLIC_HOST}"
 echo "MTProto port: ${MTPROTO_PUBLIC_PORT}"
 echo

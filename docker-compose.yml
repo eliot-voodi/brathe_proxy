@@ -38,7 +38,6 @@ services:
       PROXY_PUBLIC_HOST: ${PROXY_PUBLIC_HOST:-auto}
       MTPROTO_PUBLIC_HOST: ${MTPROTO_PUBLIC_HOST:-}
       PROXY_PUBLIC_HTTP_PORT: ${HTTP_PROXY_PORT:-13128}
-      PROXY_PUBLIC_SOCKS_PORT: ${SOCKS_PROXY_PORT:-11080}
       MTPROTO_PUBLIC_PORT: ${MTPROTO_PUBLIC_PORT:-2053}
       MTPROTO_INTERNAL_PORT: 3443
       MTPROTO_SECRET_MODE: ${MTPROTO_SECRET_MODE:-faketls}
@@ -131,7 +130,6 @@ services:
       - proxy_logs:/var/log/3proxy
     ports:
       - "${HTTP_PROXY_PORT:-13128}:3128"
-      - "${SOCKS_PROXY_PORT:-11080}:1080"
     networks:
       - proxy_internal
 
