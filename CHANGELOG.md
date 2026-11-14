@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0 - 2026-11-08
+
+- New protocol: Telegram WEB proxy (`tg://webproxy`) via telemt `transport = "web"` behind Caddy on `:443`.
+- Per-user `allow_web` flag (UI checkbox, row menu toggle, "copy TG WEB" link, CSV import/report column); reuses the user's MTProto secret in `dd` mode.
+- Migration enables WEB for every existing user that has MTProto.
+
 ## 1.0.1 - 2026-04-23
 
 - Preserve MTProto secrets on restore, so existing `tg://proxy` links remain valid after backup recovery.

@@ -203,6 +203,7 @@
             <div class="proto-toggles proto-toggles-inline" role="group" aria-label="Протоколы">
               <label class="check-tile check-tile-compact"><input type="checkbox" name="allow_http" checked /> <span>HTTP</span></label>
               <label class="check-tile check-tile-compact"><input type="checkbox" name="allow_mtproto" id="allowMtprotoCheckbox" /> <span>MTProto</span></label>
+              <label class="check-tile check-tile-compact" title="Telegram WEB-прокси (tg://webproxy)"><input type="checkbox" name="allow_web" id="allowWebCheckbox" /> <span>WEB</span></label>
             </div>
             <label class="field field-compact field-compact-date">
               <span class="field-label">До</span>
@@ -586,6 +587,10 @@
           <label class="check-row">
             <input type="checkbox" name="edit_allow_mtproto" id="editAllowMtproto" />
             <span>Включить MTProto для этого пользователя</span>
+          </label>
+          <label class="check-row">
+            <input type="checkbox" name="edit_allow_web" id="editAllowWeb" />
+            <span>Включить Telegram WEB-прокси (тот же секрет)</span>
           </label>
           <div id="mtprotoEditDetails" class="mtproto-edit-details hidden">
             <label class="check-row">

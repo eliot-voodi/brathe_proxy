@@ -43,6 +43,13 @@ services:
       MTPROTO_SECRET_MODE: ${MTPROTO_SECRET_MODE:-faketls}
       MTPROTO_STATS_URL: http://mtproto:9090/v1/users
       MTPROTO_FAKE_TLS_DOMAIN: ${MTPROTO_FAKE_TLS_DOMAIN:-yandex.ru}
+      # Telegram WEB-прокси (tg://webproxy) через telemt + Caddy на :443.
+      WEB_PROXY_ENABLED: ${WEB_PROXY_ENABLED:-true}
+      WEB_PROXY_PUBLIC_HOST: ${WEB_PROXY_PUBLIC_HOST:-${MTPROTO_PUBLIC_HOST:-}}
+      WEB_PROXY_PUBLIC_IP: ${WEB_PROXY_PUBLIC_IP:-}
+      WEB_PROXY_INTERNAL_PORT: ${WEB_PROXY_INTERNAL_PORT:-18080}
+      WEB_PROXY_TRUSTED_CIDR: 10.210.99.20/32
+      WEB_PROXY_CARRIER: ${WEB_PROXY_CARRIER:-https}
       # Low-load mode: less frequent log polling, sampling, and DB writes.
       PROXY_LOGDUMP_BYTES: ${PROXY_LOGDUMP_BYTES:-65536}
       TRAFFIC_POLL_INTERVAL_SECONDS: ${TRAFFIC_POLL_INTERVAL_SECONDS:-8.0}
@@ -146,7 +153,29 @@ services:
       - ${PANEL_DATA_HOST_PATH:-./data}/runtime/mtproto:/config
     expose:
       - "9090"
+      # WEB listener telemt (plain HTTP), доступен только Caddy во внутренней сети.
+      - "${WEB_PROXY_INTERNAL_PORT:-18080}"
     ports:
       - "${MTPROTO_PUBLIC_PORT:-2053}:3443"
     networks:
       - proxy_internal
+
+  # TLS-терминатор для Telegram WEB-прокси: https://WEB_PROXY_PUBLIC_HOST:443 -> mtproto:18080.
+  caddy:
+    image: caddy:2
+    container_name: proxy_web_caddy
+    restart: unless-stopped
+    depends_on:
+      - mtproto
+    environment:
+      WEB_PROXY_PUBLIC_HOST: ${WEB_PROXY_PUBLIC_HOST:-${MTPROTO_PUBLIC_HOST:-}}
+      WEB_PROXY_INTERNAL_PORT: ${WEB_PROXY_INTERNAL_PORT:-18080}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${PANEL_DATA_HOST_PATH:-./data}/runtime/caddy:/data
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      proxy_internal:
+        ipv4_address: 10.210.99.20

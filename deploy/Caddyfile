@@ -1,0 +1,8 @@
+# Telegram WEB-прокси: Caddy держит сертификат и отдаёт весь vhost в telemt (transport = "web").
+# Caddy сам ставит X-Forwarded-For = адрес клиента, логи запросов по умолчанию выключены
+# (в query и заголовках ходят ключи моста — их нельзя писать в логи).
+{$WEB_PROXY_PUBLIC_HOST:localhost} {
+	reverse_proxy mtproto:{$WEB_PROXY_INTERNAL_PORT:18080} {
+		flush_interval -1
+	}
+}

@@ -93,6 +93,7 @@ const mtprotoForm = document.getElementById("mtprotoForm");
 const mtprotoUserId = document.getElementById("mtprotoUserId");
 const mtprotoModalLead = document.getElementById("mtprotoModalLead");
 const editAllowMtproto = document.getElementById("editAllowMtproto");
+const editAllowWeb = document.getElementById("editAllowWeb");
 const mtprotoEditDetails = document.getElementById("mtprotoEditDetails");
 const editRegenerateMtprotoSecret = document.getElementById("editRegenerateMtprotoSecret");
 const mtprotoBotHexValue = document.getElementById("mtprotoBotHexValue");
@@ -251,7 +252,7 @@ function formatProtoCell(user) {
       ? "MTProto + реклама"
       : "MTProto"
     : "MTProto выкл.";
-  return `${chip("H", user.allow_http, user.allow_http ? "HTTP" : "HTTP выкл.")}${chip("M", user.allow_mtproto, mtTitle)}`;
+  return `${chip("H", user.allow_http, user.allow_http ? "HTTP" : "HTTP выкл.")}${chip("M", user.allow_mtproto, mtTitle)}${chip("W", user.allow_web, user.allow_web ? "Telegram WEB-прокси" : "WEB выкл.")}`;
 }
 
 function onlineStatusPillCompact(user) {
@@ -365,11 +366,13 @@ function userRowActionsMenuHtml(user) {
         <div class="menu-section-label">Протоколы</div>
         <button type="button" class="menu-item-btn" data-action="toggle-http" role="menuitem">${user.allow_http ? "Выключить HTTP" : "Включить HTTP"}</button>
         <button type="button" class="menu-item-btn" data-action="toggle-mtproto" role="menuitem">${user.allow_mtproto ? "Выключить MTProto" : "Включить MTProto"}</button>
+        <button type="button" class="menu-item-btn" data-action="toggle-web" role="menuitem">${user.allow_web ? "Выключить WEB" : "Включить WEB"}</button>
         <div class="menu-section-label">Доступ</div>
         <button type="button" class="menu-item-btn" data-action="limits" role="menuitem">Срок и лимиты…</button>
         <button type="button" class="menu-item-btn" data-action="edit-mtproto" role="menuitem">Настройки MTProto…</button>
         <button type="button" class="menu-item-btn" data-action="http-creds" role="menuitem">Показать HTTP доступ</button>
         <button type="button" class="menu-item-btn" data-action="copy-mtproto" role="menuitem">Скопировать TG MTProto</button>
+        <button type="button" class="menu-item-btn" data-action="copy-web" role="menuitem">Скопировать TG WEB</button>
         ${
           canDelete
             ? `<div class="menu-divider"></div>
@@ -378,6 +381,12 @@ function userRowActionsMenuHtml(user) {
         }
       </div>
     </div>`;
+}
+
+function webProxyLink(user) {
+  const raw = String(user.mtproto_secret || "").toLowerCase();
+  const core = /^(ee|dd)/.test(raw) && raw.length >= 34 ? raw.slice(2, 34) : raw.slice(0, 32);
+  return `tg://webproxy?server=${encodeURIComponent(panelMeta.web_proxy_host || "")}&secret=dd${core}`;
 }
 
 function bindUserRowActions(tr, user) {
@@ -402,6 +411,32 @@ function bindUserRowActions(tr, user) {
   tr.querySelector('[data-action="toggle-mtproto"]')?.addEventListener("click", async () => {
     closeMenu();
     await updateUser(user.id, { allow_mtproto: !user.allow_mtproto });
+  });
+  tr.querySelector('[data-action="toggle-web"]')?.addEventListener("click", async () => {
+    closeMenu();
+    await updateUser(user.id, { allow_web: !user.allow_web });
+  });
+  tr.querySelector('[data-action="copy-web"]')?.addEventListener("click", async () => {
+    closeMenu();
+    if (!accessOk) {
+      setStatus("Доступ заблокирован (срок или лимит трафика)", true);
+      return;
+    }
+    if (!user.allow_web || !user.mtproto_secret) {
+      setStatus("У пользователя выключен WEB", true);
+      return;
+    }
+    if (!panelMeta.web_proxy_enabled || !panelMeta.web_proxy_host) {
+      setStatus("WEB-прокси не настроен на сервере (WEB_PROXY_PUBLIC_HOST)", true);
+      return;
+    }
+    const link = webProxyLink(user);
+    const copied = await copyToClipboard(link);
+    if (copied) {
+      setStatus(`WEB ссылка скопирована для ${user.username}`);
+    } else {
+      setStatus(`Скопируйте вручную: ${link}`, true);
+    }
   });
   tr.querySelector('[data-action="limits"]')?.addEventListener("click", () => {
     closeMenu();
@@ -745,6 +780,7 @@ function openMtprotoModal(user) {
     mtprotoModalLead.textContent = `Пользователь: ${user.username}`;
   }
   if (editAllowMtproto) editAllowMtproto.checked = !!user.allow_mtproto;
+  if (editAllowWeb) editAllowWeb.checked = !!user.allow_web;
   if (editRegenerateMtprotoSecret) editRegenerateMtprotoSecret.checked = false;
   if (editMtprotoAdEnabled) editMtprotoAdEnabled.checked = !!user.mtproto_ad_enabled;
   if (editMtprotoAdChannel) editMtprotoAdChannel.value = user.mtproto_ad_channel || "";
@@ -1654,7 +1690,11 @@ function syncMtprotoAdFormVisibility() {
 }
 
 if (allowMtprotoCheckbox) {
-  allowMtprotoCheckbox.addEventListener("change", syncMtprotoAdFormVisibility);
+  allowMtprotoCheckbox.addEventListener("change", () => {
+    const webBox = document.getElementById("allowWebCheckbox");
+    if (webBox && allowMtprotoCheckbox.checked) webBox.checked = true;
+    syncMtprotoAdFormVisibility();
+  });
 }
 if (mtprotoAdEnabledCheckbox) {
   mtprotoAdEnabledCheckbox.addEventListener("change", syncMtprotoAdFormVisibility);
@@ -1668,6 +1708,7 @@ createForm.addEventListener("submit", async (e) => {
     username: String(formData.get("username") || "").trim(),
     allow_http: formData.get("allow_http") === "on",
     allow_mtproto: formData.get("allow_mtproto") === "on",
+    allow_web: formData.get("allow_web") === "on",
     mtproto_ad_enabled: formData.get("mtproto_ad_enabled") === "on",
   };
   try {
@@ -1716,6 +1757,8 @@ createForm.addEventListener("submit", async (e) => {
     createForm.reset();
     createForm.querySelector('input[name="allow_http"]').checked = true;
     createForm.querySelector('input[name="allow_mtproto"]').checked = false;
+    const webBox = createForm.querySelector('input[name="allow_web"]');
+    if (webBox) webBox.checked = false;
     prefillsScopedUsername();
     syncMtprotoAdFormVisibility();
     await loadUsers({ forceFullRender: true });
@@ -2187,6 +2230,7 @@ if (mtprotoForm) {
     if (!id) return;
     const allowMt = editAllowMtproto?.checked === true;
     const payload = { allow_mtproto: allowMt };
+    if (editAllowWeb) payload.allow_web = editAllowWeb.checked === true;
     if (editRegenerateMtprotoSecret?.checked) {
       payload.regenerate_mtproto_secret = true;
     }

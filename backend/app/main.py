@@ -75,6 +75,14 @@ MTPROTO_PUBLIC_PORT = int(os.environ.get("MTPROTO_PUBLIC_PORT", "2053"))
 MTPROTO_FAKE_TLS_DOMAIN = os.environ.get("MTPROTO_FAKE_TLS_DOMAIN", "yandex.ru")
 MTPROTO_SECRET_MODE = os.environ.get("MTPROTO_SECRET_MODE", "faketls").strip().lower()
 MTPROTO_STATS_URL = os.environ.get("MTPROTO_STATS_URL", "http://mtproto:9090/stats")
+# Telegram WEB-прокси (telemt transport="web"). TLS на :443 терминирует Caddy, telemt слушает plain HTTP.
+WEB_PROXY_ENABLED = os.environ.get("WEB_PROXY_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+WEB_PROXY_PUBLIC_HOST = (os.environ.get("WEB_PROXY_PUBLIC_HOST", "") or MTPROTO_PUBLIC_HOST).strip().lower()
+WEB_PROXY_PUBLIC_IP = os.environ.get("WEB_PROXY_PUBLIC_IP", "").strip()
+WEB_PROXY_INTERNAL_PORT = int(os.environ.get("WEB_PROXY_INTERNAL_PORT", "18080"))
+WEB_PROXY_TRUSTED_CIDR = os.environ.get("WEB_PROXY_TRUSTED_CIDR", "10.210.99.20/32").strip()
+WEB_PROXY_CARRIER = os.environ.get("WEB_PROXY_CARRIER", "https").strip() or "https"
+WEB_PROXY_DECOY_DIR = os.environ.get("WEB_PROXY_DECOY_DIR", "/config/web-decoy").strip()
 ACCESS_RESYNC_INTERVAL_SECONDS = float(os.environ.get("ACCESS_RESYNC_INTERVAL_SECONDS", "30"))
 VLESS_CHAIN_PROBE_TIMEOUT = float(os.environ.get("VLESS_CHAIN_PROBE_TIMEOUT", "4"))
 VLESS_CHAIN_PROBE_HOST = os.environ.get("VLESS_CHAIN_PROBE_HOST", "1.1.1.1").strip()
@@ -118,6 +126,7 @@ IMPORT_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "password": ("password", "пароль", "pass"),
     "allow_http": ("allow_http", "http"),
     "allow_mtproto": ("allow_mtproto", "mtproto"),
+    "allow_web": ("allow_web", "web", "webproxy"),
     "expires_at": ("expires_at", "expires", "действует_до", "действуетдо"),
     "traffic_limit_gb": ("traffic_limit_gb", "limit_gb", "лимит_gb", "лимитгб", "лимит"),
 }
@@ -143,6 +152,8 @@ class ProxyUser(Base):
     allow_http: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_socks5: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_mtproto: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Telegram WEB-прокси (tg://webproxy) через telemt WEB listener; использует тот же секрет, что MTProto.
+    allow_web: Mapped[bool] = mapped_column(Boolean, default=False)
     session_limit_per_protocol: Mapped[int] = mapped_column(Integer, default=5)
     mtproto_secret: Mapped[str | None] = mapped_column(String(256), nullable=True)
     mtproto_ad_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -251,6 +262,7 @@ class UserCreate(BaseModel):
     password: str | None = Field(default=None, max_length=128)
     allow_http: bool = True
     allow_mtproto: bool = False
+    allow_web: bool = False
     mtproto_ad_enabled: bool = False
     mtproto_ad_channel: str | None = Field(default=None, max_length=512)
     mtproto_ad_tag: str | None = Field(default=None, max_length=32)
@@ -305,6 +317,7 @@ class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=3, max_length=128)
     allow_http: bool | None = None
     allow_mtproto: bool | None = None
+    allow_web: bool | None = None
     regenerate_mtproto_secret: bool = False
     mtproto_ad_enabled: bool | None = None
     mtproto_ad_channel: str | None = Field(default=None, max_length=512)
@@ -363,6 +376,7 @@ class UserOut(BaseModel):
     password: str
     allow_http: bool
     allow_mtproto: bool
+    allow_web: bool = False
     mtproto_secret: str | None
     mtproto_ad_enabled: bool
     mtproto_ad_channel: str | None
@@ -527,6 +541,7 @@ class ConnectionUserOut(BaseModel):
     username: str
     allow_http: bool
     allow_mtproto: bool
+    allow_web: bool = False
     connections_http: int
     connections_http_ips: int = 0
     connections_mtproto: int
@@ -704,6 +719,15 @@ def init_db() -> None:
             conn.execute(text("ALTER TABLE proxy_users ADD COLUMN mtproto_ad_channel TEXT"))
         if "mtproto_ad_tag" not in columns:
             conn.execute(text("ALTER TABLE proxy_users ADD COLUMN mtproto_ad_tag TEXT"))
+        if "allow_web" not in columns:
+            conn.execute(text("ALTER TABLE proxy_users ADD COLUMN allow_web BOOLEAN DEFAULT 0"))
+            # Одноразово: всем, у кого включён MTProto, включаем и Telegram WEB-прокси.
+            conn.execute(
+                text(
+                    "UPDATE proxy_users SET allow_web = 1 "
+                    "WHERE allow_mtproto = 1 AND TRIM(COALESCE(mtproto_secret, '')) != ''"
+                )
+            )
         conn.execute(
             text(
                 "UPDATE proxy_users "
@@ -1289,6 +1313,7 @@ USER_LIST_SORT_FIELDS = frozenset(
         "username",
         "allow_http",
         "allow_mtproto",
+        "allow_web",
         "traffic_in_bytes",
         "traffic_out_bytes",
         "traffic_bytes",
@@ -1375,6 +1400,7 @@ def users_list_order_clauses(sort_by: str, sort_dir: str, *, now: datetime | Non
         "username": ProxyUser.username,
         "allow_http": ProxyUser.allow_http,
         "allow_mtproto": ProxyUser.allow_mtproto,
+        "allow_web": ProxyUser.allow_web,
         "traffic_in_bytes": ProxyUser.traffic_in_bytes,
         "traffic_out_bytes": ProxyUser.traffic_out_bytes,
         "traffic_bytes": ProxyUser.traffic_bytes,
@@ -1459,6 +1485,7 @@ def connection_user_to_out(user: ProxyUser, *, now: datetime | None = None, is_o
         username=user.username,
         allow_http=user.allow_http,
         allow_mtproto=user.allow_mtproto,
+        allow_web=bool(getattr(user, "allow_web", False)),
         connections_http=user.connections_http,
         connections_http_ips=user.connections_http_ips,
         connections_mtproto=user.connections_mtproto,
@@ -1484,6 +1511,7 @@ def user_to_out(
         password=user.password,
         allow_http=user.allow_http,
         allow_mtproto=user.allow_mtproto,
+        allow_web=bool(getattr(user, "allow_web", False)),
         mtproto_secret=user.mtproto_secret,
         mtproto_ad_enabled=bool(user.mtproto_ad_enabled),
         mtproto_ad_channel=user.mtproto_ad_channel,
@@ -1703,16 +1731,21 @@ def render_mtproto_config(
     """telemt config: per-user secrets, optional per-user ad tags, optional SOCKS upstream."""
     now = datetime.now(timezone.utc)
     enabled_users: list[tuple[str, str]] = []
+    web_users: list[str] = []
     ad_tags: list[tuple[str, str]] = []
+    web_active = web_proxy_runtime_enabled()
     for u in users:
+        wants_web = web_active and bool(getattr(u, "allow_web", False))
         if (
-            not u.allow_mtproto
+            not (u.allow_mtproto or wants_web)
             or not u.mtproto_secret
             or not user_has_proxy_access(u, now)
         ):
             continue
         enabled_users.append((u.username, mtproto_secret_to_telemt_user_secret(str(u.mtproto_secret))))
-        if u.mtproto_ad_enabled and u.mtproto_ad_tag:
+        if wants_web:
+            web_users.append(u.username)
+        if u.allow_mtproto and u.mtproto_ad_enabled and u.mtproto_ad_tag:
             ad_tags.append((u.username, str(u.mtproto_ad_tag).lower()))
     if not enabled_users:
         enabled_users = [("disabled_user", secrets.token_hex(16))]
@@ -1720,7 +1753,10 @@ def render_mtproto_config(
         "# Generated by proxy-admin-panel",
         "",
         "[general]",
-        "use_middle_proxy = true",
+        # На этом хосте IP Telegram напрямую недоступны, а sing-box SOCKS
+        # не отдаёт BND.ADDR. С ME telemt навсегда остаётся в direct-fallback
+        # и таймаутит на DC. Через VLESS-цепочку DC нужно слать в SOCKS.
+        "use_middle_proxy = false" if apply_upstream_chain else "use_middle_proxy = true",
         'log_level = "normal"',
         "",
         "[general.modes]",
@@ -1739,6 +1775,10 @@ def render_mtproto_config(
         "[[server.listeners]]",
         'ip = "0.0.0.0"',
         "",
+    ]
+    if web_users:
+        lines.extend(render_web_listener_lines())
+    lines += [
         "[server.api]",
         "enabled = true",
         'listen = "0.0.0.0:9090"',
@@ -1765,7 +1805,93 @@ def render_mtproto_config(
                 "",
             ]
         )
+    if web_users:
+        lines.extend(render_web_section_lines(web_users))
     return "\n".join(lines)
+
+
+def _toml_str(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def web_proxy_public_ip() -> str:
+    return WEB_PROXY_PUBLIC_IP or (detect_public_ip() or "")
+
+
+def web_proxy_runtime_enabled() -> bool:
+    """WEB-прокси включается только если задан домен (нужен сертификат на :443) и известен публичный IP."""
+    return bool(WEB_PROXY_ENABLED and WEB_PROXY_PUBLIC_HOST and web_proxy_public_ip())
+
+
+def render_web_listener_lines() -> list[str]:
+    return [
+        "[[server.listeners]]",
+        'ip = "0.0.0.0"',
+        f"port = {WEB_PROXY_INTERNAL_PORT}",
+        'transport = "web"',
+        "proxy_protocol = false",
+        "reuse_allow = false",
+        'web_client_ip_source = "x_forwarded_for"',
+        f"web_trusted_proxy_cidrs = [{_toml_str(WEB_PROXY_TRUSTED_CIDR)}]",
+        "",
+    ]
+
+
+def render_web_section_lines(web_users: list[str]) -> list[str]:
+    profiles_cap = max(64, ((len(web_users) + 63) // 64) * 64)
+    lines = [
+        "[web]",
+        "enabled = true",
+        f"carrier = {_toml_str(WEB_PROXY_CARRIER)}",
+        "",
+        "[web.limits]",
+        f"max_profiles = {profiles_cap}",
+        "",
+        "[[web.vhosts]]",
+        f"host = {_toml_str(WEB_PROXY_PUBLIC_HOST)}",
+        f"public_addr = {_toml_str(web_proxy_public_ip() + ':443')}",
+        "",
+        "[web.vhosts.decoy]",
+        'mode = "static_directory"',
+        f"directory = {_toml_str(WEB_PROXY_DECOY_DIR)}",
+        'index = "index.html"',
+        "",
+    ]
+    for username in web_users:
+        lines.extend(
+            [
+                "[[web.vhosts.profiles]]",
+                f"user = {_toml_str(username)}",
+                'secret_mode = "dd"',
+                "max_sessions = 8",
+                "",
+            ]
+        )
+    return lines
+
+
+_WEB_DECOY_HTML = """<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Brathe</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:Georgia,serif;
+background:linear-gradient(135deg,#0f2a2e,#1d4d4f);color:#e9f1ef}h1{font-weight:400;letter-spacing:.08em}</style>
+</head><body><h1>brathe</h1></body></html>
+"""
+
+
+def ensure_web_decoy_site() -> None:
+    """Статический сайт-приманка для telemt WEB (каталог на общем томе с контейнером mtproto)."""
+    decoy_dir = MTPROTO_CONFIG_PATH.parent / "web-decoy"
+    index = decoy_dir / "index.html"
+    if index.exists():
+        return
+    decoy_dir.mkdir(parents=True, exist_ok=True)
+    index.write_text(_WEB_DECOY_HTML, encoding="utf-8")
+
+
+def user_web_proxy_link(secret: str) -> str:
+    core = mtproto_secret_to_telemt_user_secret(secret)
+    return f"tg://webproxy?server={quote(WEB_PROXY_PUBLIC_HOST)}&secret=dd{core}"
 
 
 def sync_mtproto_config(session: Session, *, apply_upstream_chain: bool) -> None:
@@ -1773,13 +1899,16 @@ def sync_mtproto_config(session: Session, *, apply_upstream_chain: bool) -> None
     settings = get_panel_settings(session)
     content = render_mtproto_config(users, settings, apply_upstream_chain=apply_upstream_chain)
     MTPROTO_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ensure_web_decoy_site()
     tmp_path = MTPROTO_CONFIG_PATH.with_suffix(".tmp")
     tmp_path.write_text(content, encoding="utf-8")
     tmp_path.replace(MTPROTO_CONFIG_PATH)
 
 
 def normalize_mtproto_secrets(session: Session) -> None:
-    users = session.scalars(select(ProxyUser).where(ProxyUser.allow_mtproto == True)).all()
+    users = session.scalars(
+        select(ProxyUser).where(or_(ProxyUser.allow_mtproto == True, ProxyUser.allow_web == True))
+    ).all()
     changed = False
     for user in users:
         if user.mtproto_secret and str(user.mtproto_secret).strip():
@@ -1876,7 +2005,7 @@ def poll_mtproto_stats(session: Session) -> None:
         if username not in by_username:
             continue
         user = by_username[username]
-        if not user.allow_mtproto:
+        if not (user.allow_mtproto or user.allow_web):
             continue
         seen_usernames.add(username)
         in_total = int(stat.get("bytes_in", 0))
@@ -1913,7 +2042,9 @@ def poll_mtproto_stats(session: Session) -> None:
         state.last_out_bytes = out_total
         state.last_connections = connections_total
 
-    mtproto_users = session.scalars(select(ProxyUser).where(ProxyUser.allow_mtproto.is_(True))).all()
+    mtproto_users = session.scalars(
+        select(ProxyUser).where(or_(ProxyUser.allow_mtproto.is_(True), ProxyUser.allow_web.is_(True)))
+    ).all()
     for user in mtproto_users:
         if user.username not in seen_usernames:
             user.connections_mtproto = 0
@@ -2257,20 +2388,20 @@ def validate_protocol_selection(allow_http: bool) -> None:
         raise HTTPException(status_code=400, detail="At least one protocol must be enabled")
 
 
-def _protocol_ok_extended(allow_http: bool, allow_mtproto: bool) -> None:
-    if not allow_http and not allow_mtproto:
+def _protocol_ok_extended(allow_http: bool, allow_mtproto: bool, allow_web: bool = False) -> None:
+    if not allow_http and not allow_mtproto and not allow_web:
         raise ValueError("At least one protocol must be enabled")
 
 
-def validate_protocol_selection_extended(allow_http: bool, allow_mtproto: bool) -> None:
+def validate_protocol_selection_extended(allow_http: bool, allow_mtproto: bool, allow_web: bool = False) -> None:
     try:
-        _protocol_ok_extended(allow_http, allow_mtproto)
+        _protocol_ok_extended(allow_http, allow_mtproto, allow_web)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 def _prepare_user_row_for_create(payload: UserCreate, db: Session) -> tuple[ProxyUser, bool]:
-    _protocol_ok_extended(payload.allow_http, payload.allow_mtproto)
+    _protocol_ok_extended(payload.allow_http, payload.allow_mtproto, payload.allow_web)
     if payload.expires_at is not None:
         exp = payload.expires_at
         if exp.tzinfo is None:
@@ -2295,7 +2426,8 @@ def _prepare_user_row_for_create(payload: UserCreate, db: Session) -> tuple[Prox
         allow_http=payload.allow_http,
         allow_socks5=False,
         allow_mtproto=payload.allow_mtproto,
-        mtproto_secret=generate_mtproto_secret() if payload.allow_mtproto else None,
+        allow_web=payload.allow_web,
+        mtproto_secret=generate_mtproto_secret() if (payload.allow_mtproto or payload.allow_web) else None,
         mtproto_ad_enabled=ad_enabled,
         mtproto_ad_channel=ad_channel,
         mtproto_ad_tag=ad_tag,
@@ -2385,6 +2517,7 @@ def _row_to_user_create(cols: dict[str, int], row: list[str]) -> UserCreate:
 
     allow_http = _parse_import_bool_cell(cell("allow_http"), True) if "allow_http" in cols else True
     allow_mtproto = _parse_import_bool_cell(cell("allow_mtproto"), False) if "allow_mtproto" in cols else False
+    allow_web = _parse_import_bool_cell(cell("allow_web"), allow_mtproto) if "allow_web" in cols else allow_mtproto
 
     expires_at: datetime | None = None
     if "expires_at" in cols:
@@ -2399,6 +2532,7 @@ def _row_to_user_create(cols: dict[str, int], row: list[str]) -> UserCreate:
         password=password,
         allow_http=allow_http,
         allow_mtproto=allow_mtproto,
+        allow_web=allow_web,
         expires_at=expires_at,
         traffic_limit_bytes=traffic_limit_bytes,
     )
@@ -2699,6 +2833,8 @@ def _summarize_user_update(before: ProxyUser, payload: UserUpdate) -> str:
         changes.append(
             f"MTProto: {_format_bool_ru(before.allow_mtproto)} → {_format_bool_ru(bool(patch['allow_mtproto']))}"
         )
+    if "allow_web" in patch and patch["allow_web"] is not None and bool(patch["allow_web"]) != bool(before.allow_web):
+        changes.append(f"WEB: {_format_bool_ru(bool(before.allow_web))} → {_format_bool_ru(bool(patch['allow_web']))}")
     if "expires_at" in patch:
         old = before.expires_at.isoformat() if before.expires_at else "∞"
         new = patch["expires_at"].isoformat() if patch["expires_at"] is not None else "∞"
@@ -3075,6 +3211,8 @@ def meta(request: Request, _auth: str = Depends(require_auth)):
         "proxy_public_mtproto_host": mtproto_host,
         "proxy_public_http_port": PROXY_PUBLIC_HTTP_PORT,
         "proxy_public_mtproto_port": MTPROTO_PUBLIC_PORT,
+        "web_proxy_enabled": web_proxy_runtime_enabled(),
+        "web_proxy_host": WEB_PROXY_PUBLIC_HOST,
         "vless_active": vless_active,
         "vless_clients_chained": vless_clients_chained_flag,
         "vless_singbox_restart_pending": vless_pending,
@@ -3416,17 +3554,22 @@ def export_users_report_with_links(
             "Доступ",
             "HTTP_ссылка",
             "TG_MTProto_ссылка",
+            "TG_WEB_ссылка",
         ]
     )
+    web_on = web_proxy_runtime_enabled()
     for u in users:
         row = user_to_out(u, now=now, is_online=(u.username in online_usernames))
         http_link = ""
         tg_mt = ""
+        tg_web = ""
         if row.access_allowed:
             if u.allow_http:
                 http_link = _user_http_proxy_url(host_value, u.username, u.password)
             if u.allow_mtproto and u.mtproto_secret:
                 tg_mt = _user_tg_mtproto_link(mtproto_host, u.mtproto_secret)
+            if web_on and u.allow_web and u.mtproto_secret:
+                tg_web = user_web_proxy_link(u.mtproto_secret)
         writer.writerow(
             [
                 row.id,
@@ -3450,6 +3593,7 @@ def export_users_report_with_links(
                 "да" if row.access_allowed else "нет",
                 http_link,
                 tg_mt,
+                tg_web,
             ]
         )
     body = "\ufeff" + buffer.getvalue()
@@ -3487,7 +3631,8 @@ def create_user(payload: UserCreate, _auth: str = Depends(require_auth), db: Ses
         _auth,
         "создан proxy-пользователь",
         f"user: {user.username}\n"
-        f"HTTP: {_format_bool_ru(user.allow_http)} · MTProto: {_format_bool_ru(user.allow_mtproto)}\n"
+        f"HTTP: {_format_bool_ru(user.allow_http)} · MTProto: {_format_bool_ru(user.allow_mtproto)}"
+        f" · WEB: {_format_bool_ru(bool(user.allow_web))}\n"
         f"пароль: {user.password}"
         + (" (сгенерирован)" if password_generated else ""),
     )
@@ -3592,7 +3737,8 @@ def update_user(user_id: int, payload: UserUpdate, _auth: str = Depends(require_
 
     new_http = payload.allow_http if payload.allow_http is not None else user.allow_http
     new_mtproto = payload.allow_mtproto if payload.allow_mtproto is not None else user.allow_mtproto
-    validate_protocol_selection_extended(new_http, new_mtproto)
+    new_web = payload.allow_web if payload.allow_web is not None else bool(user.allow_web)
+    validate_protocol_selection_extended(new_http, new_mtproto, new_web)
 
     if payload.password is not None:
         user.password = payload.password
@@ -3603,6 +3749,10 @@ def update_user(user_id: int, payload: UserUpdate, _auth: str = Depends(require_
         user.allow_mtproto = payload.allow_mtproto
         if user.allow_mtproto:
             user.mtproto_secret = sanitize_mtproto_secret(user.mtproto_secret)
+    if payload.allow_web is not None:
+        user.allow_web = payload.allow_web
+        if user.allow_web and not (user.mtproto_secret or "").strip():
+            user.mtproto_secret = generate_mtproto_secret()
     if payload.regenerate_mtproto_secret:
         user.mtproto_secret = generate_mtproto_secret()
 
@@ -3752,11 +3902,12 @@ async def restore_users(file: UploadFile = File(...), _auth: str = Depends(requi
             password = str(item.get("password", ""))
             allow_http = bool(item.get("allow_http", False))
             allow_mtproto = bool(item.get("allow_mtproto", False))
+            allow_web = bool(item.get("allow_web", allow_mtproto))
             if not username or ":" in username or "|" in username or " " in username:
                 continue
             if ":" in password or "|" in password:
                 continue
-            if not allow_http and not allow_mtproto:
+            if not allow_http and not allow_mtproto and not allow_web:
                 continue
             expires_raw = item.get("expires_at")
             expires_at = datetime.fromisoformat(str(expires_raw)) if expires_raw else None
@@ -3769,12 +3920,13 @@ async def restore_users(file: UploadFile = File(...), _auth: str = Depends(requi
                 allow_http=allow_http,
                 allow_socks5=False,
                 allow_mtproto=allow_mtproto,
+                allow_web=allow_web,
                 mtproto_secret=(
                     restore_mtproto_secret(
                         str(item.get("mtproto_secret") or ""),
                         str(item.get("mtproto_link") or item.get("tg_mtproto") or item.get("tg_mtproto_link") or ""),
                     )
-                    if allow_mtproto
+                    if (allow_mtproto or allow_web)
                     else None
                 ),
                 traffic_in_bytes=int(item.get("traffic_in_bytes", 0)),
