@@ -80,6 +80,12 @@ const vlessForm = document.getElementById("vlessForm");
 const vlessEnabled = document.getElementById("vlessEnabled");
 const vlessLinkInput = document.getElementById("vlessLinkInput");
 const vlessFormHint = document.getElementById("vlessFormHint");
+const telegramBackupForm = document.getElementById("telegramBackupForm");
+const tgBackupEnabled = document.getElementById("tgBackupEnabled");
+const tgBackupSchedule = document.getElementById("tgBackupSchedule");
+const tgBackupRetention = document.getElementById("tgBackupRetention");
+const tgBackupRunNowBtn = document.getElementById("tgBackupRunNowBtn");
+const telegramBackupHint = document.getElementById("telegramBackupHint");
 const httpCredsModal = document.getElementById("httpCredsModal");
 const httpUserValue = document.getElementById("httpUserValue");
 const httpPassValue = document.getElementById("httpPassValue");
@@ -1263,6 +1269,36 @@ async function loadVlessSettings() {
       vlessFormHint.className = "hint callout callout-neutral is-empty";
     }
   }
+  await loadTelegramBackupSettings();
+}
+
+async function loadTelegramBackupSettings() {
+  if (!telegramBackupForm || !tgBackupEnabled || !tgBackupSchedule || !tgBackupRetention) return;
+  const s = await api("/api/settings/telegram-backup");
+  tgBackupEnabled.checked = !!s.enabled;
+  tgBackupSchedule.value = s.schedule || "09:00,20:00";
+  tgBackupRetention.value = String(s.retention_days || 7);
+  if (!telegramBackupHint) return;
+  const parts = [];
+  if (!s.telegram_configured) {
+    parts.push("Задайте TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в .env сервера.");
+    telegramBackupHint.className = "hint callout callout-warn";
+  } else if (s.enabled) {
+    parts.push(
+      `Расписание активно (${s.timezone}): ${s.schedule}. Хранение ${s.retention_days} дн.`
+    );
+    if (s.via_socks) parts.push("Отправка через VLESS/SOCKS.");
+    if (s.last_slot) parts.push(`Последний слот: ${s.last_slot}.`);
+    telegramBackupHint.className = "hint callout callout-ok";
+  } else {
+    parts.push("Расписание выключено. Можно отправить бэкап вручную.");
+    if (s.via_socks) parts.push("Отправка через VLESS/SOCKS.");
+    telegramBackupHint.className = "hint callout callout-info";
+  }
+  telegramBackupHint.textContent = parts.join(" ");
+  if (!parts.length) {
+    telegramBackupHint.className = "hint callout callout-neutral is-empty";
+  }
 }
 
 function escapeHtml(value) {
@@ -2087,6 +2123,43 @@ if (vlessForm) {
       await loadVlessSettings();
     } catch (err) {
       setStatus(err.message, true);
+    }
+  });
+}
+
+if (telegramBackupForm) {
+  telegramBackupForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = {
+      enabled: !!tgBackupEnabled?.checked,
+      schedule: (tgBackupSchedule?.value || "").trim() || "09:00,20:00",
+      retention_days: Math.max(1, Math.min(90, Number(tgBackupRetention?.value || 7))),
+    };
+    try {
+      await api("/api/settings/telegram-backup", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      setStatus("Расписание Telegram-бэкапов сохранено.");
+      await loadTelegramBackupSettings();
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  });
+}
+
+if (tgBackupRunNowBtn) {
+  tgBackupRunNowBtn.addEventListener("click", async () => {
+    try {
+      tgBackupRunNowBtn.disabled = true;
+      const res = await api("/api/settings/telegram-backup/run", { method: "POST" });
+      setStatus(`Бэкап отправлен в Telegram: ${res.file || "ok"}`);
+      await loadTelegramBackupSettings();
+    } catch (err) {
+      setStatus(err.message, true);
+    } finally {
+      tgBackupRunNowBtn.disabled = false;
     }
   });
 }

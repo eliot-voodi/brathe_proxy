@@ -6,8 +6,9 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${PROJECT_DIR}/.env"
 
 CRON_TAG="# proxy-admin-panel-telegram-backup"
-CRON_SCHEDULE_DEFAULT="10 3 * * *"
-KEEP_LAST=8
+CRON_SCHEDULE_DEFAULT="0 9,20 * * *"
+# Локальные архивы старше N дней удаляются (по умолчанию 7).
+RETENTION_DAYS_DEFAULT=7
 
 usage() {
   cat <<'EOF'
@@ -15,12 +16,14 @@ Usage:
   bash deploy/telegram_backup.sh [options]
 
 Options:
-  --env-file PATH          Path to .env (default: /opt/proxy-admin-panel/.env)
+  --env-file PATH          Path to .env (default: project .env)
   --chat-id ID             Telegram chat_id (optional, can be from .env)
   --bot-token TOKEN        Telegram bot token (optional, can be from .env)
   --topic-id ID            Telegram forum topic id (message_thread_id), optional
-  --install-cron           Install/update daily cron entry
-  --cron-schedule EXPR     Cron expression for --install-cron (default: 10 3 * * *)
+  --retention-days N       Keep local backups for N days (default: 7)
+  --install-cron           Install/update cron entry (optional; panel scheduler preferred)
+  --cron-schedule EXPR     Cron expression for --install-cron (default: 0 9,20 * * *)
+  --remove-cron            Remove telegram-backup cron entries
   --help                   Show this help
 
 Required configuration (in .env or args):
@@ -28,12 +31,14 @@ Required configuration (in .env or args):
   TELEGRAM_BOT_TOKEN
 Optional:
   TELEGRAM_TOPIC_ID
+  TELEGRAM_VIA_SOCKS=true (default) — send via sing-box SOCKS (VLESS)
+  SINGBOX_SOCKS_HOST / SINGBOX_SOCKS_PORT
 
 What script does on backup run:
   1) Cleans DB from stale rows (cleanup_db.py)
   2) Creates SQLite backup file
-  3) Compresses backup to .gz and sends it to Telegram
-  4) Removes old local files, keeping only last 8 backups
+  3) Compresses backup to .gz and sends it to Telegram (via SOCKS/VLESS when enabled)
+  4) Removes local telegram backups older than retention days
 EOF
 }
 
@@ -41,7 +46,9 @@ CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TOPIC_ID="${TELEGRAM_TOPIC_ID:-}"
 INSTALL_CRON=0
+REMOVE_CRON=0
 CRON_SCHEDULE="${CRON_SCHEDULE_DEFAULT}"
+RETENTION_DAYS="${TELEGRAM_BACKUP_RETENTION_DAYS:-${RETENTION_DAYS_DEFAULT}}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -61,8 +68,16 @@ while [[ $# -gt 0 ]]; do
       TOPIC_ID="${2:-}"
       shift 2
       ;;
+    --retention-days)
+      RETENTION_DAYS="${2:-}"
+      shift 2
+      ;;
     --install-cron)
       INSTALL_CRON=1
+      shift
+      ;;
+    --remove-cron)
+      REMOVE_CRON=1
       shift
       ;;
     --cron-schedule)
@@ -108,6 +123,24 @@ validate_config() {
     echo "ERROR: TELEGRAM_BOT_TOKEN is not set (.env or --bot-token)." >&2
     exit 1
   fi
+  if ! [[ "${RETENTION_DAYS}" =~ ^[0-9]+$ ]] || (( RETENTION_DAYS < 1 )); then
+    RETENTION_DAYS="${RETENTION_DAYS_DEFAULT}"
+  fi
+}
+
+remove_cron_job() {
+  local tmp_file
+  if ! command -v crontab >/dev/null 2>&1; then
+    echo "crontab not installed; nothing to remove."
+    return 0
+  fi
+  tmp_file="$(mktemp)"
+  {
+    crontab -l 2>/dev/null || true
+  } | awk -v tag="${CRON_TAG}" 'index($0, tag)==0' > "${tmp_file}"
+  crontab "${tmp_file}" || true
+  rm -f "${tmp_file}"
+  echo "Cron telegram-backup entries removed (if any)."
 }
 
 install_cron_job() {
@@ -151,7 +184,12 @@ send_to_telegram() {
   local caption="$2"
   local response_file
   local -a curl_args
+  local via_socks socks_host socks_port
   response_file="$(mktemp)"
+  via_socks="$(echo "${TELEGRAM_VIA_SOCKS:-true}" | tr '[:upper:]' '[:lower:]')"
+  socks_host="${SINGBOX_SOCKS_HOST:-10.210.99.10}"
+  socks_port="${SINGBOX_SOCKS_PORT:-1080}"
+
   curl_args=(
     -fsS
     -o "${response_file}"
@@ -163,6 +201,11 @@ send_to_telegram() {
   if [[ -n "${TOPIC_ID}" ]]; then
     curl_args+=(-F "message_thread_id=${TOPIC_ID}")
   fi
+  case "${via_socks}" in
+    1|true|yes|on)
+      curl_args+=(--socks5-hostname "${socks_host}:${socks_port}")
+      ;;
+  esac
   if ! curl "${curl_args[@]}" >/dev/null; then
     rm -f "${response_file}"
     return 1
@@ -185,21 +228,29 @@ PY
   rm -f "${response_file}"
 }
 
-rotate_backups() {
+prune_backups() {
   local backup_dir="$1"
-  local -a files
-  shopt -s nullglob
-  files=("${backup_dir}"/panel-telegram-backup-*.db "${backup_dir}"/panel-telegram-backup-*.db.gz)
-  shopt -u nullglob
-  if (( ${#files[@]} <= KEEP_LAST )); then
-    return
-  fi
+  local days="$2"
+  python3 - "$backup_dir" "$days" <<'PY'
+import sys
+import time
+from pathlib import Path
 
-  mapfile -t files < <(printf '%s\n' "${files[@]}" | sort -r)
-  local i
-  for (( i=KEEP_LAST; i<${#files[@]}; i++ )); do
-    rm -f -- "${files[$i]}"
-  done
+backup_dir = Path(sys.argv[1])
+days = max(1, int(sys.argv[2]))
+cutoff = time.time() - days * 86400
+if not backup_dir.is_dir():
+    raise SystemExit(0)
+removed = 0
+for path in backup_dir.glob("panel-telegram-backup-*"):
+    try:
+        if path.stat().st_mtime < cutoff:
+            path.unlink(missing_ok=True)
+            removed += 1
+    except OSError:
+        pass
+print(f"pruned {removed} backup(s) older than {days} day(s)")
+PY
 }
 
 run_cleanup_before_backup() {
@@ -241,14 +292,21 @@ run_backup() {
   caption="Proxy Admin backup ${ts} UTC"
   if ! send_to_telegram "${archive_file}" "${caption}"; then
     echo "ERROR: Failed to send backup to Telegram." >&2
+    prune_backups "${backup_dir}" "${RETENTION_DAYS}"
     exit 1
   fi
 
-  rotate_backups "${backup_dir}"
+  prune_backups "${backup_dir}" "${RETENTION_DAYS}"
   echo "Backup sent to Telegram: ${archive_file}"
 }
 
 load_env_file
+
+if (( REMOVE_CRON == 1 )); then
+  remove_cron_job
+  exit 0
+fi
+
 validate_config
 
 if (( INSTALL_CRON == 1 )); then

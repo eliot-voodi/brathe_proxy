@@ -280,6 +280,45 @@
           </div>
         </form>
         <p id="vlessFormHint" class="hint callout callout-neutral is-empty" role="status"></p>
+
+        <hr class="section-divider" />
+        <h3 class="card-subtitle">Telegram-бэкапы</h3>
+        <p class="card-desc">
+          Отправка SQLite-бэкапа в Telegram через VLESS (SOCKS sing-box). Локально хранятся только файлы за выбранный срок.
+        </p>
+        <form id="telegramBackupForm" class="create-form create-form-wide">
+          <label class="check-row">
+            <input type="checkbox" name="enabled" id="tgBackupEnabled" />
+            <span>Включить расписание бэкапов</span>
+          </label>
+          <label class="field">
+            <span class="field-label">Расписание (время МСК, через запятую)</span>
+            <input
+              name="schedule"
+              id="tgBackupSchedule"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="09:00,20:00"
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">Хранить локально (дней)</span>
+            <input
+              name="retention_days"
+              id="tgBackupRetention"
+              type="number"
+              min="1"
+              max="90"
+              value="7"
+            />
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+            <button type="button" class="btn" id="tgBackupRunNowBtn">Отправить сейчас</button>
+          </div>
+        </form>
+        <p id="telegramBackupHint" class="hint callout callout-neutral is-empty" role="status"></p>
         </div>
       </section>
 

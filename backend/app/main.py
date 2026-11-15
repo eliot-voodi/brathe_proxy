@@ -1,4 +1,5 @@
 import csv
+import gzip
 import io
 import json
 import logging
@@ -48,6 +49,15 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_TOPIC_ID = os.environ.get("TELEGRAM_TOPIC_ID", "").strip()
+# Отправка в Telegram через sing-box SOCKS (VLESS). Без этого api.telegram.org с хоста недоступен.
+TELEGRAM_VIA_SOCKS = os.environ.get("TELEGRAM_VIA_SOCKS", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+TELEGRAM_BACKUP_DIR = Path(os.environ.get("TELEGRAM_BACKUP_DIR", "/data/backups/telegram"))
+TELEGRAM_BACKUP_TZ = os.environ.get("TELEGRAM_BACKUP_TZ", "Europe/Moscow").strip() or "Europe/Moscow"
 PROXY_PUBLIC_HOST = os.environ.get("PROXY_PUBLIC_HOST", "auto")
 MTPROTO_PUBLIC_HOST = os.environ.get("MTPROTO_PUBLIC_HOST", "").strip()
 PROXY_PUBLIC_SOCKS_PORT = int(os.environ.get("PROXY_PUBLIC_SOCKS_PORT", "11080"))
@@ -185,6 +195,11 @@ class PanelSettings(Base):
     vless_link: Mapped[str | None] = mapped_column(String(4096), nullable=True)
     # После смены ссылки sing-box нужно перезапустить — иначе процесс держит старый JSON (часто direct), а прога SOCKS всё равно ОК.
     vless_singbox_restart_pending: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Telegram-бэкапы через VLESS/SOCKS (расписание — локальное время Europe/Moscow, HH:MM через запятую).
+    telegram_backup_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    telegram_backup_schedule: Mapped[str] = mapped_column(String(128), default="09:00,20:00")
+    telegram_backup_retention_days: Mapped[int] = mapped_column(Integer, default=7)
+    telegram_backup_last_slot: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class TrafficState(Base):
@@ -363,6 +378,22 @@ class VlessSettingsOut(BaseModel):
 class VlessSettingsUpdate(BaseModel):
     vless_enabled: bool
     vless_link: str | None = None
+
+
+class TelegramBackupSettingsOut(BaseModel):
+    enabled: bool
+    schedule: str
+    retention_days: int
+    timezone: str
+    last_slot: str | None = None
+    telegram_configured: bool
+    via_socks: bool
+
+
+class TelegramBackupSettingsUpdate(BaseModel):
+    enabled: bool = True
+    schedule: str = Field(default="09:00,20:00", max_length=128)
+    retention_days: int = Field(default=7, ge=1, le=90)
 
 
 class UserChartOptionOut(BaseModel):
@@ -829,7 +860,23 @@ def init_db() -> None:
                     "WHERE vless_enabled = 1 AND TRIM(COALESCE(vless_link, '')) != ''"
                 )
             )
+        if panel_columns and "telegram_backup_enabled" not in panel_columns:
+            conn.execute(text("ALTER TABLE panel_settings ADD COLUMN telegram_backup_enabled BOOLEAN DEFAULT 0"))
+        if panel_columns and "telegram_backup_schedule" not in panel_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE panel_settings ADD COLUMN telegram_backup_schedule "
+                    "VARCHAR(128) DEFAULT '09:00,20:00'"
+                )
+            )
+        if panel_columns and "telegram_backup_retention_days" not in panel_columns:
+            conn.execute(
+                text("ALTER TABLE panel_settings ADD COLUMN telegram_backup_retention_days INTEGER DEFAULT 7")
+            )
+        if panel_columns and "telegram_backup_last_slot" not in panel_columns:
+            conn.execute(text("ALTER TABLE panel_settings ADD COLUMN telegram_backup_last_slot VARCHAR(32)"))
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    TELEGRAM_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     with SessionLocal() as session:
         state = session.get(TrafficState, 1)
         if state is None:
@@ -974,6 +1021,10 @@ def get_panel_settings(session: Session) -> PanelSettings:
             vless_enabled=False,
             vless_link=None,
             vless_singbox_restart_pending=False,
+            telegram_backup_enabled=False,
+            telegram_backup_schedule="09:00,20:00",
+            telegram_backup_retention_days=7,
+            telegram_backup_last_slot=None,
         )
         session.add(s)
         session.commit()
@@ -2775,6 +2826,20 @@ def auth_profile(username: str) -> dict:
     }
 
 
+def _telegram_urlopen(req: urllib.request.Request, *, timeout: float = 30):
+    """HTTP(S) к api.telegram.org: при необходимости через sing-box SOCKS (VLESS)."""
+    if not TELEGRAM_VIA_SOCKS:
+        return urllib.request.urlopen(req, timeout=timeout)
+    try:
+        import socks  # type: ignore
+        from sockshandler import SocksiPyHandler  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(f"PySocks required for TELEGRAM_VIA_SOCKS: {exc}") from exc
+    handler = SocksiPyHandler(socks.SOCKS5, SINGBOX_SOCKS_HOST, SINGBOX_SOCKS_PORT)
+    opener = urllib.request.build_opener(handler)
+    return opener.open(req, timeout=timeout)
+
+
 def _telegram_send_message(text: str) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
@@ -2797,10 +2862,19 @@ def _telegram_send_message(text: str) -> None:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with _telegram_urlopen(req, timeout=20) as resp:
             resp.read()
     except Exception as exc:
-        logging.getLogger("proxy.panel").warning("Telegram notify failed: %s", exc)
+        detail = ""
+        read = getattr(exc, "read", None)
+        if callable(read):
+            try:
+                detail = read().decode("utf-8", "replace")[:300]
+            except Exception:
+                detail = ""
+        logging.getLogger("proxy.panel").warning(
+            "Telegram notify failed: %s %s", exc, detail
+        )
 
 
 def notify_panel_change(actor: str, action: str, details: str | None = None) -> None:
@@ -2816,6 +2890,174 @@ def notify_panel_change(actor: str, action: str, details: str | None = None) -> 
         lines.append(details.strip())
     text = "\n".join(lines)
     threading.Thread(target=_telegram_send_message, args=(text,), daemon=True).start()
+
+
+def parse_backup_schedule(raw: str) -> list[tuple[int, int]]:
+    """Parse '09:00,20:00' → [(9,0),(20,0)]. Invalid tokens skipped."""
+    out: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for part in (raw or "").split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            hh_s, mm_s = token.split(":", 1)
+            hh, mm = int(hh_s), int(mm_s)
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                continue
+            key = (hh, mm)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+        except ValueError:
+            continue
+    return out
+
+
+def normalize_backup_schedule(raw: str) -> str:
+    slots = parse_backup_schedule(raw)
+    if not slots:
+        raise ValueError("Укажите хотя бы одно время HH:MM (например 09:00,20:00)")
+    return ",".join(f"{h:02d}:{m:02d}" for h, m in sorted(slots))
+
+
+def prune_telegram_backups(retention_days: int) -> int:
+    """Delete local telegram backups older than retention_days. Returns removed count."""
+    days = max(1, int(retention_days or 7))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    TELEGRAM_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    removed = 0
+    for path in TELEGRAM_BACKUP_DIR.glob("panel-telegram-backup-*"):
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            if mtime < cutoff:
+                path.unlink(missing_ok=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _telegram_send_document(file_path: Path, caption: str) -> None:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not configured")
+    boundary = f"----PanelBoundary{secrets.token_hex(8)}"
+    file_bytes = file_path.read_bytes()
+    filename = file_path.name
+    parts: list[bytes] = []
+
+    def add_field(name: str, value: str) -> None:
+        parts.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode("utf-8")
+        )
+
+    add_field("chat_id", TELEGRAM_CHAT_ID)
+    add_field("caption", caption[:900])
+    if TELEGRAM_TOPIC_ID:
+        add_field("message_thread_id", str(TELEGRAM_TOPIC_ID))
+    parts.append(
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'
+            f"Content-Type: application/gzip\r\n\r\n"
+        ).encode("utf-8")
+    )
+    parts.append(file_bytes)
+    parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+    body = b"".join(parts)
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with _telegram_urlopen(req, timeout=120) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except Exception as exc:
+        detail = ""
+        read = getattr(exc, "read", None)
+        if callable(read):
+            try:
+                detail = read().decode("utf-8", "replace")[:400]
+            except Exception:
+                detail = ""
+        raise RuntimeError(f"Telegram sendDocument failed: {exc}; {detail}") from exc
+    data = json.loads(raw)
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram sendDocument failed: {raw[:300]}")
+
+
+def create_and_send_telegram_backup(*, retention_days: int = 7) -> Path:
+    """Create gzipped SQLite backup, send via Telegram (SOCKS/VLESS), prune old files."""
+    db_path = _sqlite_database_path()
+    if db_path is None or not db_path.exists():
+        raise RuntimeError("SQLite DB not found")
+    TELEGRAM_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    raw_path = TELEGRAM_BACKUP_DIR / f"panel-telegram-backup-{ts}.db"
+    gz_path = TELEGRAM_BACKUP_DIR / f"panel-telegram-backup-{ts}.db.gz"
+    try:
+        _sqlite_backup_file(raw_path)
+        with open(raw_path, "rb") as src, gzip.open(gz_path, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+    finally:
+        raw_path.unlink(missing_ok=True)
+    try:
+        _telegram_send_document(gz_path, f"Proxy Admin backup {ts} UTC")
+    except Exception:
+        # Keep failed archive for retry/debug; still prune older ones.
+        prune_telegram_backups(retention_days)
+        raise
+    prune_telegram_backups(retention_days)
+    return gz_path
+
+
+_backup_worker_lock = threading.Lock()
+
+
+def telegram_backup_worker(stop: threading.Event) -> None:
+    """Every ~30s: if schedule slot matches Europe/Moscow time — send backup once."""
+    log = logging.getLogger("proxy.panel.backup")
+    while not stop.is_set():
+        try:
+            with SessionLocal() as session:
+                settings = get_panel_settings(session)
+                if (
+                    settings.telegram_backup_enabled
+                    and TELEGRAM_BOT_TOKEN
+                    and TELEGRAM_CHAT_ID
+                ):
+                    try:
+                        from zoneinfo import ZoneInfo
+
+                        tz = ZoneInfo(TELEGRAM_BACKUP_TZ)
+                    except Exception:
+                        tz = timezone(timedelta(hours=3))
+                    now_local = datetime.now(tz)
+                    slots = parse_backup_schedule(settings.telegram_backup_schedule or "")
+                    current = (now_local.hour, now_local.minute)
+                    slot_key = now_local.strftime("%Y-%m-%d %H:%M")
+                    if current in slots and settings.telegram_backup_last_slot != slot_key:
+                        with _backup_worker_lock:
+                            # re-read to avoid double send under concurrent manual trigger
+                            session.refresh(settings)
+                            if settings.telegram_backup_last_slot != slot_key:
+                                create_and_send_telegram_backup(
+                                    retention_days=int(settings.telegram_backup_retention_days or 7)
+                                )
+                                settings.telegram_backup_last_slot = slot_key
+                                session.commit()
+                                log.info("Telegram backup sent for slot %s", slot_key)
+        except Exception:
+            log.exception("telegram backup worker tick failed")
+        stop.wait(30.0)
 
 
 def _format_bool_ru(value: bool) -> str:
@@ -2975,6 +3217,7 @@ async def lifespan(_app: FastAPI):
     worker_thread = threading.Thread(target=traffic_worker, args=(stop_event,), daemon=True)
     worker_thread.start()
     threading.Thread(target=proxy_chain_delayed_resync_worker, daemon=True).start()
+    threading.Thread(target=telegram_backup_worker, args=(stop_event,), daemon=True).start()
     yield
     stop_event.set()
     if worker_thread and worker_thread.is_alive():
@@ -3281,6 +3524,74 @@ def put_vless_settings(
         vless_clients_chained=vless_clients_chained(s),
         vless_singbox_restart_pending=bool(s.vless_singbox_restart_pending),
     )
+
+
+def _telegram_backup_settings_out(s: PanelSettings) -> TelegramBackupSettingsOut:
+    return TelegramBackupSettingsOut(
+        enabled=bool(getattr(s, "telegram_backup_enabled", False)),
+        schedule=str(getattr(s, "telegram_backup_schedule", None) or "09:00,20:00"),
+        retention_days=int(getattr(s, "telegram_backup_retention_days", None) or 7),
+        timezone=TELEGRAM_BACKUP_TZ,
+        last_slot=getattr(s, "telegram_backup_last_slot", None),
+        telegram_configured=bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
+        via_socks=TELEGRAM_VIA_SOCKS,
+    )
+
+
+@app.get("/api/settings/telegram-backup", response_model=TelegramBackupSettingsOut)
+def get_telegram_backup_settings(_auth: str = Depends(require_admin), db: Session = Depends(get_db)):
+    return _telegram_backup_settings_out(get_panel_settings(db))
+
+
+@app.put("/api/settings/telegram-backup", response_model=TelegramBackupSettingsOut)
+def put_telegram_backup_settings(
+    payload: TelegramBackupSettingsUpdate,
+    _auth: str = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        schedule = normalize_backup_schedule(payload.schedule)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if payload.enabled and not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
+        raise HTTPException(
+            status_code=400,
+            detail="Задайте TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в .env сервера",
+        )
+    s = get_panel_settings(db)
+    before = (
+        f"enabled={bool(s.telegram_backup_enabled)} schedule={s.telegram_backup_schedule} "
+        f"retention={s.telegram_backup_retention_days}"
+    )
+    s.telegram_backup_enabled = bool(payload.enabled)
+    s.telegram_backup_schedule = schedule
+    s.telegram_backup_retention_days = int(payload.retention_days)
+    db.commit()
+    db.refresh(s)
+    prune_telegram_backups(s.telegram_backup_retention_days)
+    notify_panel_change(
+        _auth,
+        "изменены настройки Telegram-бэкапов",
+        f"{before}\n→ enabled={s.telegram_backup_enabled} schedule={s.telegram_backup_schedule} "
+        f"retention={s.telegram_backup_retention_days} ({TELEGRAM_BACKUP_TZ})",
+    )
+    return _telegram_backup_settings_out(s)
+
+
+@app.post("/api/settings/telegram-backup/run")
+def run_telegram_backup_now(_auth: str = Depends(require_admin), db: Session = Depends(get_db)):
+    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
+        raise HTTPException(status_code=400, detail="Telegram не настроен в .env")
+    s = get_panel_settings(db)
+    try:
+        with _backup_worker_lock:
+            path = create_and_send_telegram_backup(
+                retention_days=int(s.telegram_backup_retention_days or 7)
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось отправить бэкап: {exc}") from exc
+    notify_panel_change(_auth, "ручной Telegram-бэкап", f"файл: {path.name}")
+    return {"ok": True, "file": path.name}
 
 
 @app.post("/api/settings/vless/restart-done", response_model=VlessSettingsOut)

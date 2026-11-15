@@ -627,6 +627,20 @@ kbd {
   border-color: rgba(124, 92, 255, 0.22);
 }
 
+.section-divider {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 22px 0 16px;
+}
+
+.card-subtitle {
+  margin: 0 0 6px;
+  font-size: 0.98rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
 .card-head {
   padding: 16px 18px 12px;
   border-bottom: 1px solid var(--line);
